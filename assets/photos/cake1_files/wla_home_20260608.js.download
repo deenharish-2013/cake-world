@@ -1,0 +1,3683 @@
+/*Inline Slick Slider Js*/
+
+// Accessibility cleanup: Slick's default ARIA fails modern WCAG audits.
+// Defined at top-level (before any .slick() call) so document-delegated init
+// events also fire through this handler for hardcoded slider inits below.
+function cleanSlickA11y(slider) {
+    var $s = $(slider);
+    if (!$s.length) return;
+    $s.find('.slick-track').removeAttr('role').removeAttr('aria-live');
+    $s.find('.slick-slide').removeAttr('role').removeAttr('aria-describedby');
+    $s.find('.slick-dots').attr('role', 'tablist').attr('aria-label', 'Slide pagination');
+    $s.find('.slick-dots > li').each(function () {
+        var $li = $(this);
+        $li.removeAttr('role').removeAttr('aria-selected').removeAttr('aria-controls');
+        $li.children('button').attr('role', 'tab').attr('aria-selected', $li.hasClass('slick-active') ? 'true' : 'false');
+    });
+    if (!$s.attr('aria-label') && !$s.attr('aria-labelledby')) {
+        $s.attr('aria-label', $s.data('aria-label') || 'Carousel');
+    }
+    $s.attr('role', 'region').attr('aria-roledescription', 'carousel');
+}
+$(document).on('init reInit afterChange', '.slick-slider, [data-slick]', function (e, slick) {
+    cleanSlickA11y((slick && slick.$slider) ? slick.$slider : this);
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * SINGLE-OUTLET MODE
+ * A brand with exactly one outlet has nothing to pick, so the whole location
+ * flow is suppressed: the popup on load / add-to-cart / category / banner
+ * clicks, the hourly reset, and the header location bar. The one outlet is
+ * seeded into localStorage so every slug-based link routes straight to
+ * /order/<slug> — mirroring the pre-location-flow CI3 behaviour where single
+ * outlet rendered direct links. Multi-outlet is untouched: every branch that
+ * uses this is gated on isSingleOutlet.
+ * `stores_count` is emitted globally in header_config.php (= ab.no_of_stores).
+ * ────────────────────────────────────────────────────────────────────────── */
+window.isSingleOutlet = (typeof stores_count !== 'undefined' && parseInt(stores_count, 10) === 1);
+
+// Resolve the single outlet's details from whatever the current page exposes:
+//  - home page:          global `storesDetails` (full array from $stores)
+//  - product/item pages: `window.singleOutletStore` (emitted server-side)
+function getSingleOutletStore() {
+    if (typeof storesDetails !== 'undefined' && storesDetails && storesDetails.length === 1) {
+        return storesDetails[0];
+    }
+    if (typeof window.singleOutletStore !== 'undefined' && window.singleOutletStore) {
+        return window.singleOutletStore;
+    }
+    return null;
+}
+
+// Seed the only outlet into localStorage so the site behaves as if it's chosen.
+// Returns true when location data is present (already, or after seeding).
+function seedSingleOutletLocation() {
+    if (!window.isSingleOutlet) return false;
+    var haveSlug = localStorage.getItem('slug');
+    var haveBiz  = localStorage.getItem('business');
+    if (haveSlug && haveSlug !== 'null' && haveBiz && haveBiz !== 'null') return true;
+    var store = getSingleOutletStore();
+    if (!store) return false;
+    var slug = store.web_slug || store.slug || '';
+    if (!slug) return false;
+    localStorage.setItem('business', store.id || '');
+    localStorage.setItem('slug', slug);
+    if (store.city)     localStorage.setItem('city', store.city);
+    if (store.locality) localStorage.setItem('locality', store.locality);
+    return true;
+}
+
+// Single outlet: send the user to the only outlet's order page instead of the
+// location popup. Returns true if it navigated/handled, false otherwise.
+function goToSingleOutletOrderPage() {
+    if (!window.isSingleOutlet) return false;
+    if (!seedSingleOutletLocation()) return false;
+    var slug = localStorage.getItem('slug');
+    if (!slug || slug === 'null') return false;
+    var path = window.location.pathname || '';
+    // Already on an order/checkout page — nothing to do (don't loop-redirect).
+    if (path.indexOf('/order/') === 0 || path.indexOf('/checkout') > -1) return true;
+    window.location.href = window.location.origin + '/order/' + slug;
+    return true;
+}
+
+// SINGLE OUTLET: catch any DIRECT location-modal show (widgets that call
+// .modal('show') instead of showLocationStep) and route to the order page.
+$(document).ready(function() {
+    if (window.isSingleOutlet) {
+        $(document).on('show.bs.modal', '#locationFlowModal, #locationfetchmodal', function(e) {
+            if (!window.isSingleOutlet) return;
+            e.preventDefault();
+            goToSingleOutletOrderPage();
+        });
+    }
+});
+
+// Accessibility auto-labeler: fills missing accessible names on form controls,
+// icon-only links, and unlabelled buttons. Catches gaps flagged by Lighthouse
+// ("Form elements without labels", "Links without discernible name", etc.).
+function autoLabelA11y(root) {
+    var scope = root || document;
+
+    function hasAccessibleName(el) {
+        if (el.getAttribute('aria-label')) return true;
+        if (el.getAttribute('aria-labelledby')) return true;
+        if (el.getAttribute('title')) return true;
+        if (el.id && scope.querySelector('label[for="' + el.id + '"]')) return true;
+        if (el.closest && el.closest('label')) return true;
+        if ((el.textContent || '').trim().length) return true;
+        return false;
+    }
+
+    // Selects without labels — derive from name / first option / placeholder option
+    var selects = scope.querySelectorAll('select');
+    for (var i = 0; i < selects.length; i++) {
+        var s = selects[i];
+        if (hasAccessibleName(s)) continue;
+        var guess = s.getAttribute('name') ||
+                    (s.options[0] && s.options[0].text) ||
+                    s.id || 'select';
+        s.setAttribute('aria-label', guess.replace(/[_-]+/g, ' ').trim());
+    }
+
+    // Inputs without labels (skip hidden + type=submit which shouldn't need one)
+    var inputs = scope.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
+    for (var j = 0; j < inputs.length; j++) {
+        var inp = inputs[j];
+        if (hasAccessibleName(inp)) continue;
+        var lbl = inp.getAttribute('placeholder') ||
+                  inp.getAttribute('name') ||
+                  inp.id || inp.type || 'input';
+        inp.setAttribute('aria-label', lbl.replace(/[_-]+/g, ' ').trim());
+    }
+
+    // Icon-only links / anchors — derive from title, child img.alt, child svg title,
+    // or from the href (last path segment as human-readable fallback).
+    var anchors = scope.querySelectorAll('a');
+    for (var k = 0; k < anchors.length; k++) {
+        var a = anchors[k];
+        if (hasAccessibleName(a)) continue;
+        var img = a.querySelector('img[alt]');
+        var svgT = a.querySelector('svg title');
+        var name = (img && img.alt) ||
+                   (svgT && svgT.textContent) ||
+                   a.getAttribute('title') ||
+                   (a.getAttribute('href') || '').split('/').filter(Boolean).pop() ||
+                   'link';
+        a.setAttribute('aria-label', name);
+    }
+
+    // Buttons with no accessible name
+    var btns = scope.querySelectorAll('button');
+    for (var m = 0; m < btns.length; m++) {
+        var b = btns[m];
+        if (hasAccessibleName(b)) continue;
+        var bimg = b.querySelector('img[alt]');
+        var nm = (bimg && bimg.alt) ||
+                 b.getAttribute('title') ||
+                 b.className.split(/\s+/)[0] ||
+                 'button';
+        b.setAttribute('aria-label', nm.replace(/[_-]+/g, ' ').trim());
+    }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { autoLabelA11y(); });
+} else {
+    autoLabelA11y();
+}
+
+$(document).ready(function() {
+    // Location reset functionality - Check if location should be reset after 1 hour
+    checkLocationReset();
+
+    // If user is already logged in, update "Log In" button text to "Saved Addresses"
+    if (localStorage.getItem('userdata') && localStorage.getItem('userdata') != '') {
+        $('.login-or-saved-btn-text').text('Saved Addresses');
+    }
+
+    setTimeout(() => {
+        const citySelector = document.getElementById('citySelector_location');
+        const outletSelector = document.getElementById('outletSelector');
+
+        if (citySelector) {
+            citySelector.value = ""; 
+        }
+
+        if (outletSelector) {
+            outletSelector.value = ""; 
+            outletSelector.innerHTML = '<option value="" selected disabled hidden>Select Locality</option>';      
+        }
+    }, 500); 
+    function mySlick(elems) {
+        elems.each(function() {
+            var current = $(this);
+            let myOption = eval('({' + current.attr("data-option") + '})');
+            current.slick(myOption);
+            cleanSlickA11y(current);
+        });
+    }
+    mySlick($("[data-slick]"));
+
+    $('#search_pincode').on('keyup change', function() {
+        var pincode = $(this).val();
+
+        if (pincode === '') {
+            
+            $('#errorpincode_text').html('');
+            $('#notService_imagepincode').hide();
+        }
+    });
+
+    if (localStorage.getItem('orderType')) {
+        var orderType = localStorage.getItem('orderType');
+        // Update the button text based on the orderType value
+        if (orderType == 2) {
+            $('#textlocationmodal').html('');
+            $('#textlocationmodal').html('Enter the pickup location');
+
+            $('#textlocationmodalTheo').html('');
+            $('#textlocationmodalTheo').html('Enter the pickup location');
+        } else {
+            $('#textlocationmodal').html('');
+            $('#textlocationmodal').html('Enter the delivery location');
+
+            $('#textlocationmodalTheo').html('');
+            $('#textlocationmodalTheo').html('Enter the delivery location');
+        }
+    } else {
+        // Default text if orderType is not set
+        $('#textlocationmodal').html('');
+        $('#textlocationmodal').html('Enter the delivery location');
+
+        $('#textlocationmodalTheo').html('');
+        $('#textlocationmodalTheo').html('Enter the delivery location');
+    }
+
+    $('#locationfetchmodal').on('show.bs.modal', function() {
+        // Ensure locality dropdown is disabled initially if no city is selected
+        var citySelector = $('#citySelector_location');
+        var outletSelector = $('#outletSelector');
+        
+        // If no city is selected, disable locality dropdown
+        if (!citySelector.val() || citySelector.val() == '' || citySelector.val() == 'null') {
+            outletSelector.addClass('disabled');
+            outletSelector.attr('disabled', 'disabled');
+            outletSelector.html('<option value="" selected disabled hidden>Select Locality</option>');
+        }
+        
+        // Check if orderType is stored in localStorage
+        if (localStorage.getItem('orderType')) {
+            var orderType = localStorage.getItem('orderType');
+            // Update the button text based on the orderType value
+            if (orderType == 2) {
+                $('#enterAddressButton').html('');
+                $('#enterAddressButton').html('Enter the pickup location');
+                $('#searchitem_locality_new').attr('placeholder', 'Enter the pickup location');
+            } else {
+                $('#enterAddressButton').html('');
+                $('#enterAddressButton').html('Enter the delivery location');
+                $('#searchitem_locality_new').attr('placeholder', 'Enter the delivery location');
+
+            }
+        } else {
+            // Default text if orderType is not set
+            $('#enterAddressButton').html('');
+            $('#enterAddressButton').html('Enter the delivery location');
+            $('#searchitem_locality_new').attr('placeholder', 'Enter the delivery location');
+        }
+    });
+    
+    // Fallback: Load cities if modal is opened from other places (not from document.ready)
+    // This ensures cities are loaded even if modal is opened programmatically elsewhere
+    // Use .off() first to prevent duplicate event handlers
+    $('#locationfetchmodal').off('shown.bs.modal').on('shown.bs.modal', function() {
+        //console.log('[CityLoader] shown.bs.modal event fired');
+        //console.log('[CityLoader] isPreloadingCities:', isPreloadingCities, 'preloadCompletedForModal:', preloadCompletedForModal);
+        
+        var citySelector = $('#citySelector_location');
+        //console.log('[CityLoader] citySelector in shown.bs.modal:', citySelector.length > 0);
+        
+        if (citySelector.length === 0) {
+            console.warn('[CityLoader] citySelector not found in shown.bs.modal');
+            return;
+        }
+        
+        // Check if dropdown was cleared after being populated (safeguard)
+        var hasCities = citySelector.find('option').length > 1;
+        var currentHtml = citySelector.html() || '';
+        var isLoading = currentHtml.indexOf('Loading') !== -1;
+        
+        //console.log('[CityLoader] Cities check - hasCities:', hasCities, 'Options count:', citySelector.find('option').length, 'isLoading:', isLoading);
+        //console.log('[CityLoader] lastPopulatedCityData exists:', !!lastPopulatedCityData);
+        
+        // SAFEGUARD: If dropdown shows "Loading..." but we have stored data, restore it
+        if (isLoading && lastPopulatedCityData && !isPreloadingCities) {
+            //console.log('[CityLoader] ⚠️ SAFEGUARD: Dropdown was cleared after population! Restoring...');
+            var storedData = lastPopulatedCityData;
+            // Check if data is still fresh (within 10 seconds)
+            if (Date.now() - storedData.timestamp < 10000) {
+                //console.log('[CityLoader] Restoring dropdown from stored data');
+                populateCityDropdown(storedData.result, citySelector, storedData.orderType, storedData.selectedCity);
+                var restoredCount = citySelector.find('option').length;
+                //console.log('[CityLoader] Dropdown restored. Options count:', restoredCount);
+                return; // Don't make new API call
+            } else {
+                //console.log('[CityLoader] Stored data is too old, will fetch fresh data');
+                lastPopulatedCityData = null; // Clear old data
+            }
+        }
+        
+        // Don't interfere if preload is in progress OR just completed (from preloadCitiesAndOpenModal)
+        if (isPreloadingCities || preloadCompletedForModal) {
+            //console.log('[CityLoader] Preload in progress or completed, skipping shown.bs.modal handler to prevent duplicate API call');
+            // Reset the completed flag after a short delay (so it doesn't interfere with immediate checks)
+            if (preloadCompletedForModal) {
+                setTimeout(function() {
+                    preloadCompletedForModal = false;
+                    //console.log('[CityLoader] Reset preloadCompletedForModal flag');
+                }, 500);
+            }
+            return;
+        }
+        
+        // Don't load if cities are already loaded OR currently loading (from preload)
+        if (!hasCities && !isLoading) {
+            // Cities not loaded - fetch them now (fallback for cases where modal opened directly)
+            //console.log('[CityLoader] Fallback: Loading cities via shown.bs.modal handler (preload did not run)');
+            isPreloadingCities = true; // Set flag to prevent duplicate
+            citySelector.html('<option value="" selected>Loading...</option>');
+            
+            callGetStoresName({
+                slug: '',
+                pId: typeof pId !== 'undefined' ? pId : '',
+                orderType: order_selected_tab,
+                success: function(result) {
+                    //console.log('[CityLoader] Fallback API success! Result:', result);
+                    isPreloadingCities = false;
+                    var selectedCity = localStorage.getItem('city') ?? null;
+                    var selector = $('#citySelector_location');
+                    if (selector.length > 0) {
+                        populateCityDropdown(result, selector, order_selected_tab, selectedCity);
+                        var optionCount = selector.find('option').length;
+                        //console.log('[CityLoader] Fallback: Dropdown populated. Options count:', optionCount);
+                    }
+                },
+                error: function(xhr, status, error) {
+                    console.error('[CityLoader] Fallback API ERROR! Status:', status, 'Error:', error);
+                    isPreloadingCities = false;
+                    if (status !== 'abort') {
+                        var selector = $('#citySelector_location');
+                        if (selector.length > 0) {
+                            selector.html('<option value="" disabled>Error loading cities</option>');
+                        }
+                    }
+                }
+            });
+        } else {
+            if (hasCities) {
+                //console.log('[CityLoader] Cities already loaded, no action needed');
+            } else if (isLoading) {
+                //console.log('[CityLoader] Already loading (likely from preload), skipping duplicate call');
+            }
+        }
+    });
+
+    $('#locationfetchoutletmodal').on('show.bs.modal', function() {
+        // Check if orderType is stored in localStorage
+        if (localStorage.getItem('orderType')) {
+            var orderType = localStorage.getItem('orderType');
+            // Update the button text based on the orderType value
+            if (orderType == 2) {
+                $('#enterAddressButtontext').html('Enter the pickup location');
+            } else {
+                $('#enterAddressButtontext').html('Enter the delivery location');
+            }
+        } else {
+            // Default text if orderType is not set
+            $('#enterAddressButtontext').html('Enter the delivery location');
+        }
+    });
+
+
+    $('#enteraddress').on('show.bs.modal', function() {
+        // Check if orderType is stored in localStorage
+        if (localStorage.getItem('orderType')) {
+            var orderType = localStorage.getItem('orderType');
+            // Update the button text based on the orderType value
+            if (orderType == 2) {
+                $('#search_locality_new').attr('placeholder', 'Enter the pickup location');
+            } else {
+                $('#search_locality_new').attr('placeholder', 'Enter the delivery location');
+            }
+        } else {
+            // Default text if orderType is not set
+            $('#search_locality_new').attr('placeholder', 'Enter the delivery location');
+        }
+    });
+    var selectedBusinessId = localStorage.getItem('business');
+    var localstorage_locality = localStorage.getItem('locality');
+    var localstorage_city = localStorage.getItem('city');
+    var localstorage_business = localStorage.getItem('business');
+
+    if(localstorage_locality != undefined && localstorage_city != undefined && localstorage_business != undefined){
+    // if(selectedBusinessId == '' || selectedBusinessId == null || selectedBusinessId == undefined ){
+        // DO NOT call API here - let the modal show handler handle it
+        // This prevents duplicate calls when modal opens
+        // Just mark as initialized to prevent other code from calling
+        if (!window._cityListInitialized) {
+            window._cityListInitialized = true;
+        }
+    }else{
+        $('.mobileselectcity').hide();
+    }
+
+
+});
+
+// Flags to track preload state (prevents duplicate calls)
+var isPreloadingCities = false;
+var preloadCompletedForModal = false; // Track if preload completed for current modal session
+var lastPopulatedCityData = null; // Store last populated data to restore if cleared
+
+// Helper function to preload cities data and open modal when ready
+// This prevents race conditions by fetching data BEFORE opening modal
+// Defined in global scope so it's accessible from all document.ready blocks
+function preloadCitiesAndOpenModal(modalSelector) {
+    //console.log('[CityLoader] preloadCitiesAndOpenModal called for:', modalSelector);
+    //console.log('[CityLoader] isPreloadingCities:', isPreloadingCities);
+    
+    // Prevent duplicate calls
+    if (isPreloadingCities) {
+        console.warn('[CityLoader] Already preloading, skipping duplicate call');
+        return;
+    }
+    
+    var citySelector = $('#citySelector_location');
+    //console.log('[CityLoader] citySelector found:', citySelector.length > 0);
+    
+    // Check if cities are already loaded
+    if (citySelector.length > 0) {
+        var hasCities = citySelector.find('option').length > 1;
+        //console.log('[CityLoader] Cities already loaded:', hasCities, 'Options count:', citySelector.find('option').length);
+        
+        if (hasCities) {
+            // Cities already loaded, just open modal
+            //console.log('[CityLoader] Cities already loaded, opening modal directly');
+            $(modalSelector).modal('show');
+            return;
+        }
+    }
+    
+    // Set flag to prevent duplicate calls
+    isPreloadingCities = true;
+    //console.log('[CityLoader] Starting preload process...');
+    
+    // Timeout safeguard - reset flag if API call takes too long (prevents stuck state)
+    var timeoutId = setTimeout(function() {
+        if (isPreloadingCities) {
+            console.error('[CityLoader] TIMEOUT: Preload took longer than 15 seconds, resetting flag');
+            isPreloadingCities = false;
+            var selector = $('#citySelector_location');
+            if (selector.length > 0 && selector.html().indexOf('Loading') !== -1) {
+                selector.html('<option value="" disabled>Timeout loading cities. Please try again.</option>');
+            }
+        }
+    }, 15000); // 15 second timeout
+    
+    // Set loading state in dropdown (even if modal not open yet)
+    if (citySelector.length > 0) {
+        //console.log('[CityLoader] Setting loading state in dropdown');
+        citySelector.html('<option value="" selected>Loading...</option>');
+    } else {
+        console.warn('[CityLoader] citySelector not found! Modal might not be in DOM yet');
+        // Try to wait for element to appear
+        var checkCount = 0;
+        var checkInterval = setInterval(function() {
+            checkCount++;
+            var checkSelector = $('#citySelector_location');
+            if (checkSelector.length > 0 || checkCount > 20) {
+                clearInterval(checkInterval);
+                if (checkSelector.length > 0) {
+                    //console.log('[CityLoader] citySelector found after', checkCount * 100, 'ms');
+                    checkSelector.html('<option value="" selected>Loading...</option>');
+                } else {
+                    console.error('[CityLoader] citySelector still not found after 2 seconds!');
+                }
+            }
+        }, 100);
+    }
+    
+    var requestParams = {
+        slug: '',
+        pId: typeof pId !== 'undefined' ? pId : '',
+        orderType: order_selected_tab
+    };
+    //console.log('[CityLoader] API request params:', requestParams);
+    //console.log('[CityLoader] Calling callGetStoresName...');
+    
+    // Fetch cities data FIRST
+    callGetStoresName({
+        slug: '',
+        pId: typeof pId !== 'undefined' ? pId : '',
+        orderType: order_selected_tab,
+        success: function(result) {
+            clearTimeout(timeoutId); // Clear timeout on success
+            //console.log('[CityLoader] API success! Result:', result);
+            
+            // Mark that preload will complete for this modal session
+            preloadCompletedForModal = true;
+            
+            // Data is ready - now open modal and populate
+            var selectedCity = localStorage.getItem('city') ?? null;
+            //console.log('[CityLoader] Selected city from localStorage:', selectedCity);
+            
+            var selector = $('#citySelector_location');
+            //console.log('[CityLoader] citySelector after API call:', selector.length > 0);
+            
+            if (selector.length > 0) {
+                //console.log('[CityLoader] Populating dropdown with', (result && result.stores ? result.stores.length : 0), 'stores');
+                populateCityDropdown(result, selector, order_selected_tab, selectedCity);
+                
+                // Store the data so we can restore if dropdown gets cleared
+                lastPopulatedCityData = {
+                    result: result,
+                    orderType: order_selected_tab,
+                    selectedCity: selectedCity,
+                    timestamp: Date.now()
+                };
+                //console.log('[CityLoader] Stored city data for restoration if needed');
+                
+                // Verify dropdown was populated
+                var optionCount = selector.find('option').length;
+                //console.log('[CityLoader] Dropdown populated. Options count:', optionCount);
+                
+                if (optionCount <= 1) {
+                    console.error('[CityLoader] WARNING: Dropdown not properly populated! Only', optionCount, 'options found');
+                    console.error('[CityLoader] Current HTML:', selector.html());
+                    preloadCompletedForModal = false; // Reset if population failed
+                    lastPopulatedCityData = null; // Clear stored data if population failed
+                }
+            } else {
+                console.error('[CityLoader] ERROR: citySelector not found after API call!');
+                preloadCompletedForModal = false; // Reset if selector not found
+                // Wait a bit and try again (modal might be rendering)
+                setTimeout(function() {
+                    var retrySelector = $('#citySelector_location');
+                    if (retrySelector.length > 0) {
+                        //console.log('[CityLoader] Retry: citySelector found on retry, populating now');
+                        populateCityDropdown(result, retrySelector, order_selected_tab, selectedCity);
+                        preloadCompletedForModal = true; // Mark as completed after retry
+                    } else {
+                        console.error('[CityLoader] Retry: citySelector still not found!');
+                    }
+                }, 300);
+            }
+            
+            // Reset loading flag AFTER populating (but before opening modal)
+            isPreloadingCities = false;
+            
+            // Open modal now that data is ready
+            //console.log('[CityLoader] Opening modal:', modalSelector);
+            $(modalSelector).modal('show');
+            
+            // Add safeguard: Check dropdown after modal opens to ensure it wasn't cleared
+            setTimeout(function() {
+                var checkSelector = $('#citySelector_location');
+                if (checkSelector.length > 0) {
+                    var checkCount = checkSelector.find('option').length;
+                    var checkHtml = checkSelector.html() || '';
+                    var checkLoading = checkHtml.indexOf('Loading') !== -1;
+                    
+                    if (checkLoading && lastPopulatedCityData && checkCount <= 1) {
+                        console.warn('[CityLoader] ⚠️ SAFEGUARD TRIGGERED: Dropdown was cleared after modal opened! Restoring...');
+                        var storedData = lastPopulatedCityData;
+                        if (Date.now() - storedData.timestamp < 10000) {
+                            populateCityDropdown(storedData.result, checkSelector, storedData.orderType, storedData.selectedCity);
+                            //console.log('[CityLoader] Safeguard: Dropdown restored. Options count:', checkSelector.find('option').length);
+                        }
+                    } else if (checkCount > 1) {
+                        //console.log('[CityLoader] Safeguard check: Dropdown is OK. Options count:', checkCount);
+                    }
+                }
+            }, 500); // Check 500ms after modal opens
+        },
+        error: function(xhr, status, error) {
+            clearTimeout(timeoutId); // Clear timeout on error
+            console.error('[CityLoader] API ERROR! Status:', status, 'Error:', error, 'XHR:', xhr);
+            isPreloadingCities = false;
+            
+            if (status !== 'abort') {
+                var selector = $('#citySelector_location');
+                if (selector.length > 0) {
+                    selector.html('<option value="" disabled>Error loading cities</option>');
+                    //console.log('[CityLoader] Error message set in dropdown');
+                }
+                // Still open modal even on error so user can see the error
+                //console.log('[CityLoader] Opening modal despite error:', modalSelector);
+                $(modalSelector).modal('show');
+            } else {
+                //console.log('[CityLoader] Request was aborted, not opening modal');
+            }
+        }
+    });
+}
+
+/* Banner Init slick slider + animation (3)*/
+if (typeof $.fn.slick !== 'undefined') {
+$(".banner-slide").slick({
+    dots: true,
+    arrows: false,
+
+    autoplay: true,
+    autoplaySpeed: 1500,
+    infinite: true,
+    lazyLoad: "progressive",
+    slidesToShow: 2,
+    slidesToScroll: 1,
+    speed: 1500,
+    responsive: [{
+            breakpoint: 1024,
+            settings: {
+                slidesToShow: 2,
+                slidesToScroll: 1,
+                infinite: true,
+                dots: true
+            }
+        },
+        {
+            breakpoint: 600,
+            settings: {
+                slidesToShow: 2,
+                slidesToScroll: 1,
+                infinite: true,
+            }
+        },
+        {
+            breakpoint: 480,
+            settings: {
+                slidesToShow: 1,
+                slidesToScroll: 1,
+                infinite: true,
+            }
+        }
+        // You can unslick at a given breakpoint now by adding:
+        // settings: "unslick"
+        // instead of a settings object
+    ]
+});
+$(".bannerSlider").slick({
+    dots: true,
+    arrows: false,
+    infinite: true,
+    autoplay: true,
+    autoplaySpeed: 3000,
+    lazyLoad: "ondemand",
+    slidesToShow: 1,
+    slidesToScroll: 1,
+    speed: 500,
+    pauseOnHover: true,
+    fade: false,
+    responsive: [{
+        breakpoint: 768,
+        settings: {
+            speed: 200,
+            pauseOnHover: true,
+        }
+    }]
+});
+/*
+$(".app-screen-slide").slick({
+    arrows: false,
+    autoplay: true,
+    dots: true,
+    fade: true
+});
+*/
+
+$(".storiessection").slick({
+    dots: false,
+    arrows: true,
+    infinite: true,
+    autoplay: true,
+    autoplaySpeed: 3000,
+    lazyLoad: "ondemand",
+    slidesToShow: 3,
+    slidesToScroll: 1,
+    speed: 500,
+    pauseOnHover: true,
+    fade: false,
+   prevArrow: '<button class="slide-arrow prev-arrow"><i class="las la-angle-left"></i></button>',
+    nextArrow: '<button class="slide-arrow next-arrow"><i class="las la-angle-right"></i></button>',
+    responsive: [
+      {
+      breakpoint: 768,
+      settings: {
+      slidesToShow: 1,
+        speed: 200,
+      arrows: false,
+        pauseOnHover: true,
+      }
+      }
+    ]
+});
+}
+
+// Listen for the modal show event
+
+
+$(document).on('click', '.theo-banner-click', function(event) {
+
+    var bannerId = String($(this).data('banner-id')) || 'Unknown ID';
+
+    if (typeof webengage_tag == "function") {
+        webengage.track("Banner Clicked", {
+            "Banner ID": bannerId
+        });
+    }
+
+    // Get the href attribute to check if it's pointing to online-order
+    var href = $(this).attr('href') || '';
+    var isOnlineOrderLink = href && (
+        href.indexOf('online-order') !== -1 || 
+        href === 'online-order' || 
+        href === '/online-order' ||
+        href.indexOf('/online-order') !== -1
+    );
+    
+    // Check if business is selected - if yes, redirect to menu page instead of online-order
+    try {
+        var selectedBusiness = localStorage.getItem('business');
+        var outletSlug = localStorage.getItem('slug');
+        
+        // If link is to online-order and business is selected with slug, redirect to order page
+        if (isOnlineOrderLink) {
+            if (selectedBusiness && selectedBusiness !== '' && selectedBusiness !== 'null' && selectedBusiness !== 'undefined' && 
+                outletSlug && outletSlug !== '' && outletSlug !== 'null' && outletSlug !== 'undefined') {
+                
+                // Prevent default navigation to online-order
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                
+                // Use global origin or compute fallback
+                var currentOrigin = (typeof origin !== 'undefined' && origin) ? origin : window.location.origin;
+                
+                // Navigate directly to order page (menu page) with the slug
+                window.location.href = currentOrigin + '/order/' + outletSlug;
+                return false;
+            }
+            // No business selected — show location modal instead of navigating
+            if (typeof showLocationStep === 'function') {
+                event.preventDefault();
+                event.stopPropagation();
+                var userData = localStorage.getItem('userdata');
+                if (userData && userData != '' && userData != 'null' && typeof openLoginOrSavedAddresses === 'function') {
+                    openLoginOrSavedAddresses();
+                } else {
+                    showLocationStep('location');
+                }
+                return false;
+            }
+            return true;
+        }
+    } catch (e) {
+        console.error('Error in banner click handler:', e);
+        // In case of error, allow default navigation
+    }
+
+    // For non-online-order links, allow normal banner navigation
+    return true;
+});
+
+
+function changeOrderType(type) {
+    localStorage.setItem('orderType', type);
+    document.getElementById('businessCards').innerHTML = '';
+}
+
+function changeOrderType_tab(orderType) {
+    order_selected_tab = orderType;
+    localStorage.setItem('orderType', orderType);
+
+    if (orderType == 2) {
+        $('#textlocationmodal').html('Enter the pickup location');
+        $('#textlocationmodalTheo').html('Enter the pickup location');
+        switchToPickupTab();
+    } else {
+        $('#textlocationmodal').html('Enter the delivery location');
+        $('#textlocationmodalTheo').html('Enter the delivery location');
+        switchToDeliveryTab();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+
+    if (pId == 6424) {
+        localStorage.setItem('orderType', 1);
+    }
+});
+
+var initialAddressCount = 2;
+var d = "";
+var pincode_data = "";
+$(document).ready(function(){
+    if(isMaps==1){
+        var inputElement = document.getElementById("search_locality");
+        if(inputElement){
+            inputElement.addEventListener("input", debounce(function() {
+                var inputValue = inputElement.value;
+                if (inputValue.length >= 3) {
+                    renderAutocomplete();
+                }
+            
+            },300));
+        }
+
+        var inputElements_new = document.getElementById("search_locality_new");
+        if(inputElements_new){
+            inputElements_new.addEventListener("input", debounce(function() {
+                var inputValue = inputElements_new.value;
+                if (inputValue.length >= 3) {
+                    renderAutocomplete();
+                }
+            
+            },300));
+        }
+
+        var inputElements_item = document.getElementById("searchitem_locality_new");
+        if(inputElements_item){
+            inputElements_item.addEventListener("input", debounce(function() {
+                var inputValue = inputElements_item.value;
+                if (inputValue.length >= 3) {
+                    renderAutocomplete();
+                }
+            
+            },300));
+        }
+    } 
+    if(localStorage.getItem('userdata') && localStorage.getItem('userdata') != null && localStorage.getItem('userdata') != '' && typeof enable_address != 'undefined' && enable_address == 1){
+        $('#show_pincodelogin').hide();
+            var userData = JSON.parse(localStorage.getItem('userdata'));
+            var contactMappingId = userData['contactMappingId'];
+            var token = userData['token'];
+            var url = origin + '/client/getDeliveryAddress/' + pId + '/' + contactMappingId + '/' + token
+            $.ajax({
+                url: url,
+                type: "GET",
+                dataType: "json",
+                success: function(result) {
+                        
+                        if (result['rows'] != null && result['rows'].length > 0 && result.status == 1) {
+                            var remainingRowCount = result['rows'].length - initialAddressCount;
+
+                            if(result['rows'].length == 1){
+                                var resultLength= result['rows'].length;
+                            }else{
+                                var resultLength= initialAddressCount;
+                            }
+                            
+                            for (var i = 0; i < resultLength; i++) {
+                                let addressType = 'Home';
+                                if (result['rows'][i]['addressType'] == 1) {
+                                    addressType = 'Home';
+                                } else if (result['rows'][i]['addressType'] == 2) {
+                                    addressType = 'Office';
+                                } else if (result['rows'][i]['addressType'] == 3) {
+                                    addressType = 'Other';
+                                }
+
+                                var address_data = result['rows'][i];
+                                    d += '<div class="saved-address-nw-div d-flex align-items-center" onclick="locateNearestOutlet('+ address_data['contactMappingId'] +','+ address_data['parentBusinessId'] +', '+ address_data['latitude'] +', '+ address_data['longitude'] +')">';
+                                    d += '<div class="saved-address-nw-one">';
+                                    d += '<span style="background-color: #fff; width: 40px; height: 40px; line-height: 40px; display: inline-block; text-align: center; border-radius: 5px; font-size: 24px; box-shadow: 0px 1px 2px #00000029 !important; color: var(--main-bg-color);"><i class="las la-map-marker" style="color: var(--main-bg-color);"></i></span>';
+                                    d += '</div>';
+                                    d += '<div class="saved-address-nw-two pl-3">';
+                                    d += '<h4 class="mb-1">'+ addressType +'</h4>';
+                                    d += '<p class="mb-0" style="line-height: initial;">'+ result['rows'][i]['addressLine1'] +','+ result['rows'][i]['addressLine2'] +'</p>';
+                                    d += '</div>';
+                                    d += '<div class="saved-address-nw-three text-right" style="color: var(--main-bg-color); font-size: 18px;">';
+                                    d +=  '<i class="las la-angle-right"></i>';
+                                    d += '</div>';
+                                    d += '</div>';
+
+                                    if (remainingRowCount > 0) {
+                                        var resultJSON = JSON.stringify(result);
+                                        
+                                        d += "<div id='viewMoreButton' onclick='showMoreAddresses(" + resultJSON + ")' ><span style='color: var(--main-bg-color);font-weight: 500;border-bottom: 1px solid var(--main-bg-color);cursor:pointer;'>View More</span></div>";
+                                    }
+                                    
+                                    pincode_data += '<div class="saved-address-nw-div d-flex align-items-center" onclick="handlePincodeApiCall('+ address_data['pinCode'] +')">';
+                                    pincode_data += '<div class="saved-address-nw-one">';
+                                    pincode_data += '<span style="background-color: #fff; width: 40px; height: 40px; line-height: 40px; display: inline-block; text-align: center; border-radius: 5px; font-size: 24px; box-shadow: 0px 1px 2px #00000029 !important; color: var(--main-bg-color);"><i class="las la-map-marker" style="color: var(--main-bg-color);"></i></span>';
+                                    pincode_data += '</div>';
+                                    pincode_data += '<div class="saved-address-nw-two pl-3">';
+                                    pincode_data += '<h4 class="mb-1">'+ addressType +'</h4>';
+                                    pincode_data += '<p class="mb-0" style="line-height: initial;">'+ result['rows'][i]['addressLine1'] +','+ result['rows'][i]['addressLine2'] +'</p>';
+                                    pincode_data += '</div>';
+                                    pincode_data += '<div class="saved-address-nw-three text-right" style="color: var(--main-bg-color); font-size: 18px;">';
+                                    pincode_data +=  '<i class="las la-angle-right"></i>';
+                                    pincode_data += '</div>';
+                                    pincode_data += '</div>';
+
+                                    if ( i == 1) {
+                                        var resultJSON = JSON.stringify(result);
+                                        
+                                        pincode_data += "<div id='viewMoreButtonPincode' onclick='showMoreAddresses(" + resultJSON + ")' ><span style='color: var(--main-bg-color);font-weight: 500;border-bottom: 1px solid var(--main-bg-color);cursor:pointer;'>View More</span></div>";
+                                    }
+
+                            }
+                            var add_ress = document.getElementById('show_save_address');
+                            if(add_ress){
+                                $('#show_save_address').show();
+                                $('#saved_address_list').html('');
+                                $('#saved_address_list').html(d);
+                                $('#viewMoreButton').removeClass('d-none');
+                                $('#location_emptyImage').addClass('d-none');
+                            }else{
+                                $('#show_save_address').hide();
+                                $('#location_emptyImage').removeClass('d-none');
+                            }
+                            
+                            var add_ress = document.getElementById('show_pincode_save_address');
+                            if(add_ress){
+                                $('#show_pincode_save_address').show();
+                                $('#saved_pincode_address_list').html('');
+                                $('#saved_pincode_address_list').html(pincode_data);
+                                $('#viewMoreButton').removeClass('d-none');
+                            }else{
+                                $('#show_pincode_save_address').hide();
+                            }
+
+                        } else {
+                            $('#show_save_address').hide();
+                            $('#location_emptyImage').show();
+                            $('#show_pincode_save_address').hide();
+                        }                    
+        
+                }
+            });
+            }else{
+                $('#show_pincodelogin').show();
+    }
+});
+
+
+/**
+ * Use current location — triggers GPS geolocation.
+ * Defined here so it's available on both home and product pages.
+ */
+function CurrentAddress() {
+    console.log('location fetched');
+    // Analytics tracking (covers product-page and home calls)
+    if (typeof gtag === 'function') {
+        gtag('event', 'trying_acces_location', {
+            'event_category': 'Trying to access location',
+            'event_label': 'Trying to fetch current location of user',
+            'value': 1
+        });
+    }
+    if (typeof fbq === 'function') {
+        fbq('trackCustom', 'trying_acces_location', {
+            action: 'Trying to access location',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    var $locModal = $('#locationFlowModal');
+
+    function _startGPS() {
+        $('.spinner').show();
+        if (navigator.geolocation) {
+            console.log("targeting the location");
+            navigator.geolocation.getCurrentPosition(get_location, get_error, {
+                enableHighAccuracy: false,
+                timeout: 10000,
+                maximumAge: 300000
+            });
+        } else {
+            console.log("targeting the location 01");
+            $('.spinner').hide();
+            $locModal.modal('show');
+            $('#error-msg-show').removeClass('d-none').text('Geolocation is not supported by your browser.');
+        }
+    }
+
+    // Bootstrap sets _isTransitioning=true during the hide animation (~300ms).
+    // A cached GPS position fires back in <100ms, so showLocationStep → modal('show')
+    // gets silently rejected by Bootstrap mid-transition. Fix: start GPS only after
+    // the modal is fully hidden; if it's already hidden, start immediately.
+    if ($locModal.hasClass('show')) {
+        $locModal.one('hidden.bs.modal', _startGPS);
+        $locModal.modal('hide');
+    } else {
+        $locModal.modal('hide');
+        _startGPS();
+    }
+}
+
+/**
+ * GPS success callback — stores lat/lng, reverse geocodes, then shows order type selector.
+ */
+function get_location(location) {
+    var lat = location.coords.latitude;
+    var lng = location.coords.longitude;
+
+    localStorage.setItem('userLat', lat);
+    localStorage.setItem('userLng', lng);
+    localStorage.setItem('userAddressLabel', 'Other');
+    localStorage.setItem('searchLocalityInput', JSON.stringify([lat, lng]));
+    // User explicitly picked "current location" — clear any prior saved-address selection
+    // so downstream readers (cart, checkout) don't fall back to a stale address.
+    localStorage.removeItem('deliveryAddressId');
+    localStorage.removeItem('selectedDeliveryAddressId');
+    localStorage.removeItem('selectedAddressId');
+    // Also clear the previously-selected outlet. Without this, the old outlet's cart is
+    // reached by clicking the cart icon, and the add-address flow fetches localities
+    // from THAT outlet's delivery radius (wrong city) even though the user is now at GPS.
+    // Mirrors enterAddressSelectLocality's existing behavior for locality picks.
+    localStorage.removeItem('business');
+    localStorage.removeItem('slug');
+    // Legacy coord keys written by addressManager.updateLocationData() whenever the user
+    // picks a saved address on checkout. Without clearing them, the previously-picked
+    // address's coords leak into the add-address map / locality search on the new outlet
+    // even after GPS is picked on home.
+    localStorage.removeItem('lat');
+    localStorage.removeItem('lng');
+    localStorage.removeItem('formatted_Address');
+    // Mark intent source. Checkout's updateAddressDisplayFromCart skips adopting the cart's
+    // stored deliveryAddressId when this is 'gps' or 'locality' — user wants fresh coords, not
+    // whatever stale address the backend cart remembers.
+    localStorage.setItem('userLocSource', 'gps');
+
+    // Helper: AJAX reverse-geocode fallback (token for logged-in, hash key for guests)
+    function _doAjaxGeocode(lat, lng) {
+        var headers = {};
+        var extraParams = '';
+        var userData = localStorage.getItem('userdata');
+        if (userData && userData !== '' && userData !== 'null') {
+            try {
+                var parsed = JSON.parse(userData);
+                var token = parsed.token || '';
+                if (token) {
+                    headers['Token'] = token;
+                    extraParams = '&contactMappingId=' + (parsed.contactMappingId || '') + '&businessId=' + (typeof pId !== 'undefined' ? pId : '');
+                }
+            } catch(e) {}
+        }
+        if (!headers['Token']) {
+            extraParams = '&hashKey=' + (typeof geocodeHashKey !== 'undefined' ? geocodeHashKey : '') + '&businessId=' + (typeof pId !== 'undefined' ? pId : '');
+        }
+        $.ajax({
+            url: origin + '/maps_mongodb/getGeocodeAddress?lat=' + lat + '&lng=' + lng + extraParams,
+            type: 'GET',
+            dataType: 'json',
+            headers: headers,
+            success: function(resp) {
+                var loc = '', city = '';
+                if (resp && resp.status == 1) {
+                    loc = resp.locality || (resp.data && resp.data.locality) || '';
+                    city = resp.city || (resp.data && resp.data.city) || '';
+                }
+                if (loc || city) {
+                    localStorage.setItem('userAddress', loc && city ? loc + ', ' + city : (loc || city));
+                    $('.spinner').hide();
+                    if (typeof showOrderTypeSelector === 'function') showOrderTypeSelector(lat, lng);
+                } else {
+                    // API returned no usable location data — show error and let user retry
+                    $('.spinner').hide();
+                    $('#locationFlowModal').modal('show');
+                    if (typeof showLocationStep === 'function') showLocationStep('location');
+                    $('#error-msg-show').removeClass('d-none').text('Unable to fetch your location. Please try again or enter manually.').css('color', 'red');
+                }
+            },
+            error: function() {
+                $('.spinner').hide();
+                $('#locationFlowModal').modal('show');
+                if (typeof showLocationStep === 'function') showLocationStep('location');
+                $('#error-msg-show').removeClass('d-none').text('Unable to fetch your location. Please try again or enter manually.').css('color', 'red');
+            }
+        });
+    }
+
+    // Use internal geocode API directly — no Google Maps call
+    _doAjaxGeocode(lat, lng);
+}
+
+
+/**
+ * GPS error callback.
+ */
+function get_error(error) {
+    $('.spinner').hide();
+    $('#locationFlowModal').modal('show');
+
+    var msg = 'Unable to get your location. Please enter it manually.';
+    switch (error.code) {
+        case error.PERMISSION_DENIED: msg = 'Location permission denied. Please enter your location manually.'; break;
+        case error.POSITION_UNAVAILABLE: msg = 'Location information unavailable. Please enter it manually.'; break;
+        case error.TIMEOUT: msg = 'Location request timed out. Please try again or enter manually.'; break;
+    }
+    // Show error on the location step
+    showLocationStep('location');
+    $('#error-msg-show').removeClass('d-none').text(msg).css('color', 'red');
+}
+
+function debounce(func, wait) {
+    let timeout;
+    return function () {
+        const context = this, args = arguments;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
+}
+
+/**
+ * Opens Login modal if user is not logged in, or Saved Addresses modal if logged in.
+ * Called from the "Already have a saved address? Log In" button in all location modals.
+ */
+function openLoginOrSavedAddresses() {
+    // If delivery is completely off at parent level, skip saved addresses and show location modal
+    var pot = (typeof parentOrderTypes !== 'undefined') ? parentOrderTypes : {};
+    if (pot.delivery == 0 && typeof pot.delivery !== 'undefined') {
+        showLocationStep('location');
+        return;
+    }
+    var userData = localStorage.getItem('userdata');
+    if (userData && userData != null && userData != '') {
+        // User is logged in — open Saved Addresses modal and load addresses
+        try {
+            var parsed = JSON.parse(userData);
+        } catch(e) {
+            closeLocationFlow();
+            $('#loginModal').modal('show');
+            return;
+        }
+        var contactMappingId = parsed['contactMappingId'];
+        var token = parsed['token'];
+
+        // Show loading state
+        $('#savedaddress_list').html('<p class="text-center text-muted" style="padding: 20px;">Loading saved addresses...</p>');
+        showLocationStep('savedAddresses');
+
+        // Fetch saved addresses
+        var url = origin + '/client/getDeliveryAddress/' + pId + '/' + contactMappingId + '/' + token;
+        $.ajax({
+            url: url,
+            type: "GET",
+            dataType: "json",
+            success: function(result) {
+                if (result['rows'] != null && result['rows'].length > 0 && result.status == 1) {
+                    window._savedAddressItems = [];
+                    for (var i = 0; i < result['rows'].length; i++) {
+                        var addressType = 'Other';
+                        if (result['rows'][i]['addressType'] == 1) {
+                            addressType = 'Home';
+                        } else if (result['rows'][i]['addressType'] == 2) {
+                            addressType = 'Office';
+                        } else if (result['rows'][i]['addressType'] == 3) {
+                            addressType = 'Other';
+                        }
+                        var addr = result['rows'][i];
+                        var addrParts = [addr['addressLine1'], addr['addressLine2'], addr['locality'], addr['city']].filter(function(p) { return p && p != '' && p != 'null'; });
+                        var addrText = addrParts.join(', ').replace(/'/g, "\\'");
+                        var addrDisplay = addrParts.join(' ');
+                        var itemHtml = '<div class="saved--address" onclick="handleSavedAddressSelect(' + addr['latitude'] + ', ' + addr['longitude'] + ', \'' + addrText + '\', \'' + addressType + '\', ' + (addr['deliveryAddressId'] || 0) + ')">';
+                        itemHtml += '<div class="loc--icons"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M3.12671 9.75919C3.12671 5.04594 6.88364 1.20312 11.5449 1.20312C16.2062 1.20312 19.9631 5.04594 19.9631 9.75919C19.9631 12.0346 19.3146 14.4778 18.1683 16.5886C17.0234 18.6967 15.3505 20.5286 13.2579 21.5068C12.1708 22.0149 10.919 22.0149 9.83192 21.5068C7.73928 20.5286 6.06646 18.6967 4.92152 16.5886C3.77518 14.4778 3.12671 12.0346 3.12671 9.75919ZM11.5449 2.64625C7.7047 2.64625 4.56983 5.81869 4.56983 9.75919C4.56983 11.7767 5.14961 13.9848 6.18969 15.8998C7.23117 17.8175 8.70295 19.3861 10.443 20.1994C11.1428 20.5265 11.947 20.5265 12.6468 20.1994C14.3869 19.3861 15.8587 17.8175 16.9001 15.8998C17.9402 13.9848 18.52 11.7767 18.52 9.75919C18.52 5.81869 15.3851 2.64625 11.5449 2.64625ZM13.7213 6.13842C14.6253 6.46665 15.1527 7.35714 15.1527 8.42578C15.1527 9.17455 14.7373 9.8442 14.3191 10.3451C13.8841 10.866 13.3451 11.3232 12.9023 11.6597C12.8796 11.677 12.8566 11.6946 12.8333 11.7124C12.4978 11.9695 12.1095 12.2671 11.5449 12.2671C10.9804 12.267 10.592 11.9695 10.2565 11.7124C10.2333 11.6946 10.2103 11.677 10.1875 11.6596C9.7447 11.3232 9.20574 10.866 8.77074 10.3451C8.35251 9.8442 7.93711 9.17455 7.93711 8.42579C7.93711 7.35715 8.46449 6.46665 9.36851 6.13842C10.0767 5.88131 10.8574 6.02682 11.5449 6.49189C12.2325 6.02682 13.0132 5.88131 13.7213 6.13842ZM13.2288 7.4949C13.0002 7.41192 12.5616 7.43199 12.053 7.93632C11.7717 8.21528 11.3181 8.21528 11.0368 7.93632C10.5283 7.43199 10.0896 7.41192 9.86101 7.4949C9.6466 7.57275 9.38023 7.82714 9.38023 8.42579C9.38023 8.65795 9.52518 8.99702 9.87846 9.42011C10.215 9.82312 10.6587 10.2052 11.0607 10.5107C11.2785 10.6762 11.3817 10.7523 11.4639 10.7973C11.5128 10.824 11.5253 10.824 11.5424 10.8239C11.5432 10.8239 11.5441 10.8239 11.5449 10.8239C11.5458 10.8239 11.5466 10.8239 11.5474 10.8239C11.5645 10.824 11.577 10.824 11.6259 10.7973C11.7082 10.7523 11.8113 10.6762 12.0292 10.5107C12.4311 10.2052 12.8748 9.82314 13.2114 9.42012C13.5646 8.99703 13.7096 8.65796 13.7096 8.42578C13.7096 7.82714 13.4432 7.57275 13.2288 7.4949Z" fill="#222"/></svg></div>';
+                        itemHtml += '<div style="flex: 1; min-width: 0;">';
+                        itemHtml += '<span style="display: inline-block; font-size: 10px; line-height:1; font-weight: 600; color: #222; border: 1px solid #BEBEBE; border-radius: 4px; padding: 3px 8px; margin-bottom: 4px;">' + addressType + '</span>';
+                        itemHtml += '<p style="margin: 0; font-size: 14px; color: #222; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + addrDisplay + '</p>';
+                        itemHtml += '</div>';
+                        itemHtml += '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" style="flex-shrink: 0; margin-top: 8px;"><path d="M9 18l6-6-6-6" stroke="#222" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                        itemHtml += '</div>';
+                        window._savedAddressItems.push(itemHtml);
+                    }
+                    window._savedAddressShown = 3;
+                    renderSavedAddressList();
+                } else {
+                    $('#savedaddress_list').html('<p class="text-center text-muted" style="font-size: 14px; padding: 20px;">No saved addresses found</p>');
+                }
+            },
+            error: function() {
+                $('#savedaddress_list').html('<p class="text-center text-muted" style="font-size: 14px; padding: 20px;">Unable to load saved addresses</p>');
+            }
+        });
+    } else {
+        // Not logged in — close location flow, open Login modal
+        closeLocationFlow();
+        setTimeout(function() {
+            $('#loginModal').modal('show');
+        }, 300);
+    }
+}
+
+/**
+ * Handle saved address click from location modal.
+ * Stores lat/lng/address and proceeds to order type selection.
+ */
+function renderSavedAddressList() {
+    var items = window._savedAddressItems || [];
+    var shown = window._savedAddressShown || 3;
+    var total = items.length;
+    var html = items.slice(0, shown).join('');
+    if (shown < total) {
+        html += '<div id="savedaddress_viewmore" style="text-align:center;">'
+              + '<button onclick="loadMoreSavedAddresses()" style="background:none; border:none; color:var(--main-bg-color); font-size:13px; font-weight:600; cursor:pointer; text-decoration:underline;padding: 0px;">View More</button>'
+              + '</div>';
+    } else if (total > 3) {
+        html += '<div id="savedaddress_viewmore" style="text-align:center;">'
+              + '<button onclick="collapseSavedAddresses()" style="background:none; border:none; color:var(--main-bg-color); font-size:13px; font-weight:600; cursor:pointer; text-decoration:underline;padding: 0px;">View Less</button>'
+              + '</div>';
+    }
+    $('#savedaddress_list').html(html);
+}
+
+function loadMoreSavedAddresses() {
+    window._savedAddressShown = (window._savedAddressShown || 3) + 4;
+    renderSavedAddressList();
+}
+
+function collapseSavedAddresses() {
+    window._savedAddressShown = 3;
+    renderSavedAddressList();
+}
+
+function handleSavedAddressSelect(lat, lng, address, addressLabel, deliveryAddressId) {
+    localStorage.setItem('userLat', lat);
+    localStorage.setItem('userLng', lng);
+    localStorage.setItem('userAddressLabel', addressLabel || '');
+    // Mark intent — user picked a saved address, so downstream auto-select is legitimate.
+    localStorage.setItem('userLocSource', 'address');
+    // Store deliveryAddressId so checkout can auto-select this address
+    if (deliveryAddressId) {
+        localStorage.setItem('deliveryAddressId', deliveryAddressId);
+        localStorage.setItem('selectedDeliveryAddressId', deliveryAddressId);
+    }
+
+    // Use the saved address text as-is (contains flat no. + locality + city from the saved record).
+    // Geocoding lat/lng would return a nearby landmark/street, losing the flat number.
+    localStorage.setItem('userAddress', address);
+    // Track which saved address ID populated userAddress so it can be cleared if that address is deleted.
+    if (deliveryAddressId) {
+        localStorage.setItem('userAddressFromDeliveryId', deliveryAddressId);
+    }
+    showOrderTypeSelector(lat, lng);
+}
+
+/**
+ * Shows the Order Type Selection modal after user confirms their location.
+ * Calls locateNearestStore API to find nearby outlets, then shows only
+ * the order types that those outlets support.
+ */
+function showOrderTypeSelector(lat, lng) {
+    // Set address text in modal header
+    var userAddress = localStorage.getItem('userAddress') || '';
+    $('#orderTypeModal_address').text(userAddress);
+
+    // Clear any stale cache — selectOrderTypeAndRedirect will re-fetch when user picks a type
+    window._locateNearestStoreCache = null;
+
+    var flagMap = {
+        1: 'onlineOrdersDelivery',
+        2: 'onlineOrdersSelfPickup',
+        3: 'dineInOrders',
+        4: 'inCarOrders',
+        5: 'reservationAllowed',
+        6: 'uengage_pay'
+    };
+
+    if (lat != null && lng != null) {
+        // User just selected a NEW location — find the nearest outlet for those coordinates
+        // and show only the order types it supports. notServiceable is NOT shown here;
+        // it fires in selectOrderTypeAndRedirect after the user picks a type.
+        var $container = $('#orderTypeButtonsContainer');
+        $('#orderTypeButtonsContainer .order-type-card').hide();
+        if (!$container.find('.ot-loading-spinner').length) {
+            $container.append(
+                '<div class="ot-loading-spinner text-center w-100 py-3">' +
+                '<span class="spinner-border" style="width:1.5rem;height:1.5rem;color:var(--main-bg-color,#e85d26);"></span>' +
+                '</div>'
+            );
+        }
+        showLocationStep('orderType');
+
+        $.ajax({
+            url: origin + '/client/locateNearestStore',
+            data: { businessId: pId, lat: lat, lng: lng },
+            type: 'GET',
+            dataType: 'json',
+            success: function(data) {
+                $container.find('.ot-loading-spinner').remove();
+
+                // status != 1 means API explicitly says not serviceable — go straight there
+                if (data.status != 1 || !data.data || data.data.length === 0) {
+                    showLocationStep('notServiceable');
+                    return;
+                }
+
+                window._locateNearestStoreCache = data.data;
+                var outlets = data.data;
+
+                // If a specific outlet is already selected, show only its order types
+                var storedBusiness = localStorage.getItem('business');
+                if (storedBusiness) {
+                    var _matched = null;
+                    for (var _i = 0; _i < outlets.length; _i++) {
+                        if (String(outlets[_i].id) === String(storedBusiness)) { _matched = outlets[_i]; break; }
+                    }
+                    if (_matched) outlets = [_matched];
+                }
+
+                var shownCount = 0;
+                $.each(flagMap, function(typeId, field) {
+                    var supported = outlets.some(function(o) {
+                        if (typeId == 1) return o.onlineOrdersDelivery == 1;
+                        return o[field] == 1;
+                    });
+                    if (supported) {
+                        $('#orderTypeBtn_' + typeId).css('display', 'flex');
+                        shownCount++;
+                    } else {
+                        $('#orderTypeBtn_' + typeId).hide();
+                    }
+                });
+
+                // If no order type is supported by any nearby outlet, also not serviceable
+                if (shownCount === 0) {
+                    showLocationStep('notServiceable');
+                    return;
+                }
+
+                var currentOrderType = localStorage.getItem('orderType');
+                $('#orderTypeButtonsContainer .order-type-card').removeClass('selected');
+                if (currentOrderType && $('#orderTypeBtn_' + currentOrderType).is(':visible')) {
+                    $('#orderTypeBtn_' + currentOrderType).addClass('selected');
+                }
+
+                // Auto-proceed if triggered from a single-outlet action widget click
+                var _pendingSingleSlug = localStorage.getItem('pendingSingleOutletSlug');
+                var _pendingOT = parseInt(localStorage.getItem('pendingOrderType') || '0');
+                if (_pendingSingleSlug && _pendingOT > 0 && $('#orderTypeBtn_' + _pendingOT).is(':visible')) {
+                    localStorage.removeItem('pendingSingleOutletSlug');
+                    localStorage.removeItem('pendingSingleOutletCity');
+                    localStorage.removeItem('pendingOrderType');
+                    setTimeout(function() { selectOrderTypeAndRedirect(_pendingOT); }, 300);
+                    return;
+                }
+            },
+            error: function() {
+                $container.find('.ot-loading-spinner').remove();
+                showLocationStep('notServiceable');
+            }
+        });
+    } else {
+        // Header click — no new location entered. Show order types from the already-selected
+        // outlet in storesDetails (no API call needed).
+        var selectedBusinessId = localStorage.getItem('business');
+        var storeList = (typeof storesDetails !== 'undefined' && Array.isArray(storesDetails)) ? storesDetails : [];
+        var selectedOutlet = storeList.find(function(s) { return String(s.id) === String(selectedBusinessId); });
+
+        if (selectedOutlet) {
+            (selectedOutlet.onlineOrdersDelivery == 1 && selectedOutlet.onlineDeliveryOn == 1) ? $('#orderTypeBtn_1').css('display', 'flex') : $('#orderTypeBtn_1').hide();
+            selectedOutlet.onlineOrdersSelfPickup == 1 ? $('#orderTypeBtn_2').css('display', 'flex') : $('#orderTypeBtn_2').hide();
+            selectedOutlet.dineInOrders           == 1 ? $('#orderTypeBtn_3').css('display', 'flex') : $('#orderTypeBtn_3').hide();
+            selectedOutlet.inCarOrders            == 1 ? $('#orderTypeBtn_4').css('display', 'flex') : $('#orderTypeBtn_4').hide();
+            selectedOutlet.reservationAllowed     == 1 ? $('#orderTypeBtn_5').css('display', 'flex') : $('#orderTypeBtn_5').hide();
+            selectedOutlet.uengage_pay            == 1 ? $('#orderTypeBtn_6').css('display', 'flex') : $('#orderTypeBtn_6').hide();
+        } else {
+            var pot = (typeof parentOrderTypes !== 'undefined') ? parentOrderTypes : {};
+            pot.delivery    == 1 ? $('#orderTypeBtn_1').css('display', 'flex') : $('#orderTypeBtn_1').hide();
+            pot.pickup      == 1 ? $('#orderTypeBtn_2').css('display', 'flex') : $('#orderTypeBtn_2').hide();
+            pot.dineIn      == 1 ? $('#orderTypeBtn_3').css('display', 'flex') : $('#orderTypeBtn_3').hide();
+            pot.inCar       == 1 ? $('#orderTypeBtn_4').css('display', 'flex') : $('#orderTypeBtn_4').hide();
+            pot.reservation == 1 ? $('#orderTypeBtn_5').css('display', 'flex') : $('#orderTypeBtn_5').hide();
+            pot.directPay   == 1 ? $('#orderTypeBtn_6').css('display', 'flex') : $('#orderTypeBtn_6').hide();
+        }
+
+        var currentOrderType = localStorage.getItem('orderType');
+        $('#orderTypeButtonsContainer .order-type-card').removeClass('selected');
+        if (currentOrderType && $('#orderTypeBtn_' + currentOrderType).is(':visible')) {
+            $('#orderTypeBtn_' + currentOrderType).addClass('selected');
+        }
+
+        showLocationStep('orderType');
+    }
+}
+
+/**
+ * Handles "Change" link click in the order type modal.
+ * Clears stored location and reopens the appropriate location modal.
+ */
+function changeUserLocation() {
+    // Cancel any active countdown timer
+    if (window.redirectCountdownTimer) {
+        clearInterval(window.redirectCountdownTimer);
+        window.redirectCountdownTimer = null;
+    }
+    // DON'T clear localStorage here — data is only overwritten when user makes a new selection
+    if (localStorage.getItem('userdata') && localStorage.getItem('userdata') != '' && localStorage.getItem('userdata') != 'null') {
+        openLoginOrSavedAddresses();
+    } else {
+        showLocationStep('location');
+    }
+}
+
+/**
+ * Called from the header "Change" links on the home page.
+ * Opens the #orderTypeModal with the current location pre-filled,
+ * so the user can re-select order type without losing their location.
+ * Falls back to location modal if no location is stored.
+ */
+function changeFromHeader() {
+    var userLat = localStorage.getItem('userLat');
+    var userLng = localStorage.getItem('userLng');
+
+    if (userLat && userLng) {
+        // Location exists — open order type modal with current location
+        showOrderTypeSelector(parseFloat(userLat), parseFloat(userLng));
+    } else {
+        // userLat/userLng not available — try to get lat/lng from the selected outlet
+        // by re-using the locality/city to call the API with approximate coordinates
+        var business = localStorage.getItem('business');
+        if (business) {
+            // Fetch outlet details to get lat/lng, then show order type selector
+            $.ajax({
+                url: origin + '/client/locateNearestStore',
+                data: { businessId: pId },
+                type: 'GET',
+                dataType: 'json',
+                success: function(data) {
+                    if (data.status == 1 && data.data && data.data.length > 0) {
+                        // Find the outlet that matches our stored business ID
+                        var outlet = null;
+                        for (var i = 0; i < data.data.length; i++) {
+                            if (data.data[i].id == business) {
+                                outlet = data.data[i];
+                                break;
+                            }
+                        }
+                        if (outlet && outlet.latitude && outlet.longitude) {
+                            localStorage.setItem('userLat', outlet.latitude);
+                            localStorage.setItem('userLng', outlet.longitude);
+                            showOrderTypeSelector(parseFloat(outlet.latitude), parseFloat(outlet.longitude));
+                        } else {
+                            // Use first outlet's coordinates as fallback
+                            var first = data.data[0];
+                            if (first.latitude && first.longitude) {
+                                localStorage.setItem('userLat', first.latitude);
+                                localStorage.setItem('userLng', first.longitude);
+                                showOrderTypeSelector(parseFloat(first.latitude), parseFloat(first.longitude));
+                            } else {
+                                changeUserLocation();
+                            }
+                        }
+                    } else {
+                        changeUserLocation();
+                    }
+                },
+                error: function() {
+                    changeUserLocation();
+                }
+            });
+        } else {
+            // No business stored either — restart full flow
+            changeUserLocation();
+        }
+    }
+}
+
+/**
+ * Called when "Change" is clicked on Order Type or Selected Outlet in the header bar.
+ * Keeps the user location intact, clears order type and outlet, reopens #orderTypeModal.
+ */
+function changeOrderType() {
+    // DON'T clear localStorage here — data is only overwritten when user makes a new selection
+    // This preserves existing data if user opens "Change" and closes without selecting anything.
+    var selectedBusiness = localStorage.getItem('business');
+    if (selectedBusiness && selectedBusiness !== '' && selectedBusiness !== 'null') {
+        // If no user address is stored (e.g. outlet was pre-selected from store locator without
+        // the user entering their own location), collect the location first so the nearest outlet
+        // is found from the user's actual position before showing order type options.
+        var storedAddress = localStorage.getItem('userAddress');
+        if (!storedAddress || storedAddress === '' || storedAddress === 'null') {
+            changeUserLocation();
+            return;
+        }
+        // Pass stored lat/lng so showOrderTypeSelector uses the API path which accurately
+        // filters order types for the specific outlet — avoids the parentOrderTypes fallback
+        // that shows ALL types across all outlets.
+        var userLat = localStorage.getItem('userLat');
+        var userLng = localStorage.getItem('userLng');
+        if (userLat && userLng) {
+            showOrderTypeSelector(userLat, userLng);
+        } else {
+            showOrderTypeSelector();
+        }
+    } else {
+        // No outlet selected yet — run the full location flow
+        changeUserLocation();
+    }
+}
+
+/**
+ * Opens the lightweight "Add New Address" form on the home page.
+ * Initializes Google Maps, autocomplete, and prefills phone number.
+ */
+var homeAddressMap = null;
+var homeAddressMarker = null;
+var homeAddressAutocomplete = null;
+
+function openHomeAddressForm() {
+    // Clear form fields
+    $('#homeAddrLine1, #homeAddrLine2, #homeAddrPhone, #homeAddrEmail').val('');
+    $('#homeAddrLat, #homeAddrLng, #homeAddrCity, #homeAddrState, #homeAddrPincode, #homeAddrLocality').val('');
+    $('input[name="homeAddrType"][value="Home"]').prop('checked', true);
+    $('#homeAddrError').addClass('d-none').text('');
+    $('#homeAddrSearch').val('');
+
+    // Prefill phone from userdata
+    var userData = localStorage.getItem('userdata');
+    if (userData) {
+        try {
+            var parsed = JSON.parse(userData);
+            if (parsed.mobile) {
+                var mobile = parsed.mobile.replace(/^\+?91/, '');
+                if (mobile.length === 10) {
+                    $('#homeAddrPhone').val(mobile);
+                }
+            }
+        } catch(e) {}
+    }
+
+    // Clear locality search input and stale map state from any previous session
+    $('#homeLocalitySearchInput').val('');
+    $('#homeLocalityResults').hide().html('');
+    $('#homeAddrMapInfo').hide();
+    $('#homeAddrMapLocality, #homeAddrMapFullAddress').text('');
+    if (window.homeHybridState && window.homeHybridState.map) {
+        window.homeHybridState.map.remove();
+        window.homeHybridState.map = null;
+        window.homeHybridState.marker = null;
+    }
+    $('#homeLeafletMap').html('');
+
+    // Disable save button until location is loaded
+    homeSetSaveButtonState(false, 'Select location on map to continue');
+
+    // On mobile, show map first and hide the form
+    if (window.innerWidth < 768) {
+        $('#addressFormRight').hide();
+        $('#confirmLocationBtn').show();
+    } else {
+        $('#addressFormRight').show();
+        $('#confirmLocationBtn').hide();
+    }
+
+    // Show address form step (map init handled by locationStepChanged event)
+    showLocationStep('addressForm');
+}
+
+// Load Google Maps script for pages that don't have a page-specific renderAutocomplete
+// Does NOT use callback=initMap — loadGoogleMapsIfNeeded polls until ready
+function renderAutocomplete() {
+    var key = (typeof maps_keys !== 'undefined' && maps_keys !== '' && maps_keys !== 'null') ? maps_keys :
+              ((typeof map_keys !== 'undefined' && map_keys !== '' && map_keys !== 'null') ? map_keys : '');
+    var flowEnabled = (typeof maps_flow !== 'undefined') ? (maps_flow == 1) : true;
+    if (!key || !flowEnabled || window._gmapsAuthFailed) return;
+    if (typeof google === 'object' && google.maps) return;
+    if (window._mapsScriptAdded) return;
+    window._mapsScriptAdded = true;
+    var script = document.createElement('script');
+    script.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&libraries=places';
+    document.head.appendChild(script);
+}
+
+var _gmapsCallbacks = [];
+var _gmapsPolling = false;
+function loadGoogleMapsIfNeeded(callback) {
+    // Already loaded — call back immediately
+    if (typeof google !== 'undefined' && google.maps) {
+        if (callback) callback();
+        return;
+    }
+
+    // Queue the callback
+    if (callback) _gmapsCallbacks.push(callback);
+
+    // If already polling, just wait
+    if (_gmapsPolling) return;
+
+    // Try to trigger renderAutocomplete (home.php defines it, loads Google Maps) — only in Google Maps flow
+    var _lgmKey = (typeof maps_keys !== 'undefined' && maps_keys !== '') ? maps_keys :
+                  ((typeof map_keys !== 'undefined' && map_keys !== '') ? map_keys : '');
+    var _lgmFlow = (typeof maps_flow !== 'undefined') ? (maps_flow == 1) : true;
+    if (_lgmKey && _lgmFlow && !window._gmapsAuthFailed && typeof renderAutocomplete === 'function') {
+        renderAutocomplete();
+    }
+
+    // Poll until google.maps is available — never add a second script tag
+    _gmapsPolling = true;
+    var pollCount = 0;
+    var pollInterval = setInterval(function() {
+        pollCount++;
+        if (typeof google !== 'undefined' && google.maps) {
+            clearInterval(pollInterval);
+            _gmapsPolling = false;
+            var cbs = _gmapsCallbacks.slice();
+            _gmapsCallbacks = [];
+            cbs.forEach(function(cb) { cb(); });
+        } else if (pollCount > 40) {
+            clearInterval(pollInterval);
+            _gmapsPolling = false;
+        }
+    }, 500);
+}
+
+function initHomeAddressMap() {
+    // Check if we should use Leaflet + locality search flow (no Google Maps key)
+    if (typeof maps_flow !== 'undefined' && maps_flow != 1 || (typeof map_keys !== 'undefined' && map_keys == '')) {
+        // Leaflet flow — user needs to search a locality first
+        homeSetSaveButtonState(false, 'Search a locality to continue');
+        return;
+    }
+
+    if (typeof google === 'undefined' || !google.maps) {
+        // Maps not loaded yet — load and retry
+        var key = (typeof maps_keys !== 'undefined' && maps_keys != '') ? maps_keys :
+                  ((typeof map_keys !== 'undefined' && map_keys != '') ? map_keys : '');
+        if (key) {
+            loadGoogleMapsIfNeeded(function() {
+                // Google Maps loaded via callback — initialize map now
+                initHomeAddressMap();
+            });
+            // Also try renderAutocomplete if available (product pages)
+            if (typeof renderAutocomplete === 'function') {
+                renderAutocomplete();
+            }
+            return;
+        }
+        $('#homeAddressMap').html('<p class="text-center text-muted" style="padding: 80px 10px;">Maps not available</p>');
+        homeSetSaveButtonState(false, 'Map is not loaded');
+        return;
+    }
+
+    // Default center (India)
+    var defaultLat = 28.6139;
+    var defaultLng = 77.2090;
+
+    // Try user's current location from localStorage
+    var storedLat = localStorage.getItem('userLat');
+    var storedLng = localStorage.getItem('userLng');
+    if (storedLat && storedLng) {
+        defaultLat = parseFloat(storedLat);
+        defaultLng = parseFloat(storedLng);
+    }
+
+    var center = { lat: defaultLat, lng: defaultLng };
+
+    // Initialize map if not already done
+    if (!homeAddressMap) {
+        homeAddressMap = new google.maps.Map(document.getElementById('homeAddressMap'), {
+            center: center,
+            zoom: 15,
+            disableDefaultUI: true,
+            zoomControl: true,
+            gestureHandling: 'greedy'
+        });
+
+        homeAddressMarker = new google.maps.Marker({
+            position: center,
+            map: homeAddressMap,
+            draggable: true
+        });
+
+        // On marker drag end, update hidden fields
+        homeAddressMarker.addListener('dragend', function() {
+            var pos = homeAddressMarker.getPosition();
+            updateHomeAddressFromLatLng(pos.lat(), pos.lng());
+        });
+
+        // On map click, move marker
+        homeAddressMap.addListener('click', function(e) {
+            homeAddressMarker.setPosition(e.latLng);
+            updateHomeAddressFromLatLng(e.latLng.lat(), e.latLng.lng());
+        });
+    } else {
+        homeAddressMap.setCenter(center);
+        homeAddressMarker.setPosition(center);
+    }
+
+    // Force map to re-render tiles (fixes blank map when container was hidden)
+    setTimeout(function() {
+        if (homeAddressMap) {
+            google.maps.event.trigger(homeAddressMap, 'resize');
+            homeAddressMap.setCenter(center);
+        }
+    }, 100);
+    setTimeout(function() {
+        if (homeAddressMap) {
+            google.maps.event.trigger(homeAddressMap, 'resize');
+            homeAddressMap.setCenter(center);
+        }
+    }, 500);
+
+    // Update hidden fields with initial position
+    updateHomeAddressFromLatLng(defaultLat, defaultLng);
+
+    // Auto-fetch current location if no stored location
+    if (!storedLat || !storedLng) {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(function(position) {
+                var lat = position.coords.latitude;
+                var lng = position.coords.longitude;
+                localStorage.setItem('userLat', lat);
+                localStorage.setItem('userLng', lng);
+                if (homeAddressMap && homeAddressMarker) {
+                    var pos = { lat: lat, lng: lng };
+                    homeAddressMap.setCenter(pos);
+                    homeAddressMap.setZoom(16);
+                    homeAddressMarker.setPosition(pos);
+                    updateHomeAddressFromLatLng(lat, lng);
+                }
+            }, function() { /* silently fail — user can search manually */ });
+        }
+    }
+
+    // Initialize autocomplete on search input
+    if (!homeAddressAutocomplete) {
+        homeAddressAutocomplete = new google.maps.places.Autocomplete(
+            document.getElementById('homeAddressSearch'),
+            { types: ['geocode'], componentRestrictions: { country: 'in' } }
+        );
+
+        homeAddressAutocomplete.addListener('place_changed', function() {
+            var place = homeAddressAutocomplete.getPlace();
+            if (place.geometry && place.geometry.location) {
+                var lat = place.geometry.location.lat();
+                var lng = place.geometry.location.lng();
+                homeAddressMap.setCenter({ lat: lat, lng: lng });
+                homeAddressMarker.setPosition({ lat: lat, lng: lng });
+                updateHomeAddressFromLatLng(lat, lng);
+            }
+        });
+    }
+}
+
+/**
+ * Enable/disable save address button based on location readiness.
+ */
+function homeSetSaveButtonState(enabled, message) {
+    if (enabled) {
+        $('#homeAddrSaveBtn').prop('disabled', false).css('opacity', '1');
+        $('#confirmLocationBtn button').prop('disabled', false).css('opacity', '1');
+        $('#homeAddrError').addClass('d-none').text('');
+    } else {
+        $('#homeAddrSaveBtn').prop('disabled', true).css('opacity', '0.5');
+        $('#confirmLocationBtn button').prop('disabled', true).css('opacity', '0.5');
+        if (message) {
+            $('#homeAddrError').removeClass('d-none').text(message).css('color', message === 'Location not serviceable' ? 'red' : 'red');
+        }
+    }
+}
+
+/**
+ * Mobile only: confirms the map pin location and shows the address form.
+ */
+function confirmLocationAndShowForm() {
+    $('#confirmLocationBtn').hide();
+    $('#addressFormRight').show();
+    // Scroll to the form on mobile
+    var formEl = document.getElementById('addressFormRight');
+    if (formEl) formEl.scrollIntoView({ behavior: 'smooth' });
+}
+
+function updateHomeAddressFromLatLng(lat, lng) {
+    $('#homeAddrLat').val(lat);
+    $('#homeAddrLng').val(lng);
+
+    // Reverse geocode to get city, state, pincode, locality
+    if (typeof google !== 'undefined' && google.maps && google.maps.Geocoder) {
+        var geocoder = new google.maps.Geocoder();
+        geocoder.geocode({ location: { lat: lat, lng: lng } }, function(results, status) {
+            if (status === 'OK' && results[0]) {
+                var components = results[0].address_components;
+                var city = '', state = '', pincode = '', locality = '';
+                for (var i = 0; i < components.length; i++) {
+                    var types = components[i].types;
+                    if (types.indexOf('locality') > -1) city = components[i].long_name;
+                    if (types.indexOf('administrative_area_level_1') > -1) state = components[i].long_name;
+                    if (types.indexOf('postal_code') > -1) pincode = components[i].long_name;
+                    if (types.indexOf('sublocality_level_1') > -1 || types.indexOf('sublocality') > -1) locality = components[i].long_name;
+                }
+                $('#homeAddrCity').val(city);
+                $('#homeAddrState').val(state);
+                $('#homeAddrPincode').val(pincode);
+                $('#homeAddrLocality').val(locality || city);
+                $('#homeAddressSearch').val(results[0].formatted_address);
+
+                // Update visible fields
+                $('#homeAddrLocalityVisible').val(locality || city);
+                $('#homeAddrCityVisible').val(city);
+
+                // Update map info section below map and show it
+                $('#homeAddrMapLocality').text(locality || city);
+                $('#homeAddrMapFullAddress').text(results[0].formatted_address);
+                $('#homeAddrMapInfo').show();
+
+                // Enable save button — location is loaded
+                homeSetSaveButtonState(true, 'Save Address');
+            }
+        });
+    }
+}
+
+// ===== LEAFLET + LOCALITY SEARCH FLOW (No Google Maps Key) =====
+
+// State for Leaflet map on home page
+window.homeHybridState = { map: null, marker: null };
+
+// Debounce timer for locality search
+var homeLocalitySearchTimer = null;
+
+/**
+ * Searches localities by keyword using the maps_mongodb API.
+ * Called on keyup from the search input in the address form.
+ * Uses debounce (300ms) to avoid excessive API calls.
+ */
+
+// ===== ENTER ADDRESS STEP — Hybrid locality search =====
+var enterAddressSearchTimer = null;
+
+/**
+ * Searches localities for the "Enter location manually" step (hybrid flow).
+ * When user selects a result, stores lat/lng and proceeds to order type selector.
+ */
+function enterAddressSearchLocality(keyword) {
+    if (enterAddressSearchTimer) clearTimeout(enterAddressSearchTimer);
+    keyword = (keyword || '').trim();
+    if (keyword.length < 3) {
+        $('#enterAddressLocalityResults').hide().html('');
+        $('#location_emptyImage').removeClass('d-none');
+        return;
+    }
+
+    enterAddressSearchTimer = setTimeout(function() {
+        $('#enterAddressLocalityResults').html(
+            '<li style="padding:16px 14px; text-align:center;">' +
+            '<span style="display:inline-block;width:20px;height:20px;border:2px solid #ddd;border-top-color:#555;border-radius:50%;animation:enterAddrSpin 0.7s linear infinite;vertical-align:middle;"></span>' +
+            '</li>'
+        ).show();
+        if (!document.getElementById('_enterAddrSpinStyle')) {
+            var s = document.createElement('style');
+            s.id = '_enterAddrSpinStyle';
+            s.textContent = '@keyframes enterAddrSpin{to{transform:rotate(360deg)}}';
+            document.head.appendChild(s);
+        }
+        $.ajax({
+            url: origin + '/maps_mongodb/getLocalityByName',
+            data: { localityName: keyword },
+            type: 'GET',
+            dataType: 'json'
+        }).done(function(result) {
+            var items = result.search_results || result.data || result.locality || [];
+            if (result && result.status == 1 && Array.isArray(items) && items.length > 0) {
+                $('#location_emptyImage').addClass('d-none');
+                var listHtml = items.map(function(item) {
+                    var locName = (item.localityName || item.LocalityName || '').replace(/'/g, "\\'");
+                    var cityName = (item.cityName || item.CityName || '').replace(/'/g, "\\'");
+                    var lat = item.latitude || item.lat || '';
+                    var lng = item.longitude || item.lng || '';
+                    return '<li style="cursor:pointer; padding:12px 14px; border-bottom:1px solid #f0f0f0;" ' +
+                        'onclick="enterAddressSelectLocality(\'' + locName + '\',\'' + cityName + '\',' + lat + ',' + lng + ');">' +
+                        '<div style="display:flex; align-items:center; gap:10px;">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;">' +
+                        '<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" stroke="#666" stroke-width="1.5" fill="none"/>' +
+                        '<circle cx="12" cy="9" r="2.5" stroke="#666" stroke-width="1.5" fill="none"/></svg>' +
+                        '<span style="font-size:14px; color:#333;">' + locName + ', ' + cityName + '</span>' +
+                        '</div></li>';
+                }).join('');
+                $('#enterAddressLocalityResults').html(listHtml).show();
+            } else {
+                $('#enterAddressLocalityResults').html('<li style="padding:12px 14px; color:#999; font-size:13px;">No localities found</li>').show();
+            }
+        }).fail(function() {
+            $('#enterAddressLocalityResults').html('<li style="padding:12px 14px; color:#999;">Unable to search. Try again.</li>').show();
+        });
+    }, 300);
+}
+
+/**
+ * Called when user selects a locality from the enter address step (hybrid flow).
+ * Stores location and proceeds to order type selector.
+ */
+function enterAddressSelectLocality(localityName, cityName, lat, lng) {
+    // Store location data
+    localStorage.setItem('userLat', lat);
+    localStorage.setItem('userLng', lng);
+    localStorage.setItem('userAddress', localityName + ', ' + cityName);
+    localStorage.setItem('userAddressLabel', 'Other');
+    localStorage.setItem('searchLocalityInput', JSON.stringify([lat, lng]));
+    // Locality pick = raw coords, not a saved address → checkout skips auto-select of backend cart address.
+    localStorage.setItem('userLocSource', 'locality');
+    // Prior saved-address selection no longer reflects user intent.
+    localStorage.removeItem('deliveryAddressId');
+    localStorage.removeItem('selectedDeliveryAddressId');
+    localStorage.removeItem('selectedAddressId');
+
+    // Clear previously selected outlet so showOrderTypeSelector shows all outlets near this locality
+    localStorage.removeItem('business');
+    localStorage.removeItem('slug');
+
+    // Hide results
+    $('#enterAddressLocalityResults').hide().html('');
+
+    // Proceed to order type selection
+    if (typeof showOrderTypeSelector === 'function') {
+        showOrderTypeSelector(lat, lng);
+    }
+}
+
+function homeSearchLocality(keyword) {
+    // Clear previous timer
+    if (homeLocalitySearchTimer) clearTimeout(homeLocalitySearchTimer);
+
+    keyword = (keyword || '').trim();
+    if (keyword.length < 3) {
+        $('#homeLocalityResults').hide().html('');
+        return;
+    }
+
+    homeLocalitySearchTimer = setTimeout(function() {
+        $.ajax({
+            url: origin + '/maps_mongodb/getLocalityByName',
+            data: { localityName: keyword },
+            type: 'GET',
+            dataType: 'json'
+        }).done(function(result) {
+            // API response: { status: 1, search_results: [{localityName, cityName, latitude, longitude}], matched_locality: {...} }
+            var items = result.search_results || result.data || result.locality || [];
+            if (result && result.status == 1 && Array.isArray(items) && items.length > 0) {
+                var listHtml = items.map(function(item) {
+                    var locName = (item.localityName || item.LocalityName || '').replace(/'/g, "\\'");
+                    var cityName = (item.cityName || item.CityName || '').replace(/'/g, "\\'");
+                    var lat = item.latitude || item.lat || '';
+                    var lng = item.longitude || item.lng || '';
+                    return '<li style="cursor: pointer; padding: 10px 14px; border-bottom: 1px solid #f0f0f0;" ' +
+                        'onclick="homeSelectLocality(\'' + locName + '\',\'' + cityName + '\',\'' + lat + '\',\'' + lng + '\');">' +
+                        '<div style="display: flex; align-items: center; gap: 10px;">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" style="flex-shrink: 0;">' +
+                        '<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" stroke="#666" stroke-width="1.5" fill="none"/>' +
+                        '<circle cx="12" cy="9" r="2.5" stroke="#666" stroke-width="1.5" fill="none"/>' +
+                        '</svg>' +
+                        '<span style="font-size: 14px; color: #333;">' + locName + ', ' + cityName + '</span>' +
+                        '</div></li>';
+                }).join('');
+                $('#homeLocalityResults').html(listHtml).show();
+            } else {
+                $('#homeLocalityResults').html('<li style="padding: 12px 14px; color: #999; font-size: 13px;">No localities found</li>').show();
+            }
+        }).fail(function() {
+            $('#homeLocalityResults').html('<li style="padding: 12px 14px; color: #999; font-size: 13px;">Unable to search. Please try again.</li>').show();
+        });
+    }, 300);
+}
+
+/**
+ * Called when user selects a locality from the list.
+ * Fills form fields and initializes Leaflet map with the locality's coordinates.
+ */
+function homeSelectLocality(localityName, cityName, latitude, longitude) {
+    // Fill form fields
+    $('#homeAddrLocality').val(localityName);
+    $('#homeAddrLat').val(latitude);
+    $('#homeAddrLng').val(longitude);
+    $('#homeAddrCity').val(cityName);
+    $('#homeAddrLocalityVisible').val(localityName);
+    $('#homeAddrCityVisible').val(cityName);
+
+    // Update search input with selected locality
+    $('#homeLocalitySearchInput').val(localityName + ', ' + cityName);
+
+    // Hide search results dropdown
+    $('#homeLocalityResults').hide().html('');
+
+    // Update map info section and show it
+    $('#homeAddrMapLocality').text(localityName);
+    $('#homeAddrMapFullAddress').text(localityName + ', ' + cityName);
+    $('#homeAddrMapInfo').show();
+
+    // Pre-fill phone from userdata
+    var userDataStr = localStorage.getItem('userdata');
+    if (userDataStr && userDataStr != '' && userDataStr != 'null') {
+        var userData = JSON.parse(userDataStr);
+        if (userData.mobile && !$('#homeAddrPhone').val()) {
+            $('#homeAddrPhone').val(userData.mobile);
+        }
+    }
+
+    // Initialize Leaflet map inline (no modal switching)
+    setTimeout(function() {
+        homeInitLeafletMap(latitude, longitude);
+        setTimeout(function() {
+            if (window.homeHybridState && window.homeHybridState.map && typeof window.homeHybridState.map.invalidateSize === 'function') {
+                window.homeHybridState.map.invalidateSize();
+            }
+        }, 200);
+    }, 100);
+}
+
+/**
+ * Initializes a Leaflet map in the home address form.
+ * Adapted from checkout's initializeLeafletMap() in check_out_new.php.
+ */
+function homeInitLeafletMap(lat, lng) {
+    if (!window.homeHybridState) window.homeHybridState = { map: null, marker: null };
+    lat = parseFloat(lat);
+    lng = parseFloat(lng);
+
+    // Destroy existing map instance
+    if (window.homeHybridState.map !== null) {
+        window.homeHybridState.map.remove();
+        window.homeHybridState.map = null;
+    }
+
+    // Clear placeholder text
+    $('#homeLeafletMap').html('');
+
+    // Initialize Leaflet map
+    window.homeHybridState.map = L.map('homeLeafletMap', {
+        dragging: true,
+        touchZoom: true,
+        doubleClickZoom: false,
+        scrollWheelZoom: false,
+        boxZoom: false,
+        keyboard: false
+    }).setView([lat, lng], 15);
+
+    // Add OpenStreetMap tiles
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(window.homeHybridState.map);
+
+    // Custom marker icon
+    var customIcon = L.divIcon({
+        className: 'custom-marker-icon',
+        html: '<div style="width: 30px; height: 40px; position: relative;"><img src="' + origin + '/assets/themes/ue_silver/img/map_pin_black_ic.png" alt="Marker" style="width: 30px; position: absolute; top: 0; left: 0;" /></div>',
+        iconSize: [30, 40],
+        iconAnchor: [15, 40],
+        popupAnchor: [0, -50]
+    });
+
+    // Draggable marker
+    window.homeHybridState.marker = L.marker([lat, lng], {
+        draggable: true,
+        icon: customIcon
+    }).addTo(window.homeHybridState.map);
+
+    // Delivery popup
+    var deliveryPopup = L.popup({
+        className: 'delivery-location-popup',
+        closeButton: false,
+        autoClose: false,
+        closeOnClick: false,
+        offset: [0, 15]
+    }).setContent('<div style="background-color: var(--main-bg-color); color: white; padding: 3px 8px; border-radius: 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.2);">Your order will be delivered here</div>');
+
+    window.homeHybridState.marker.bindPopup(deliveryPopup).openPopup();
+
+    // Update popup position during drag
+    window.homeHybridState.marker.on('drag', function(e) {
+        var markerPos = window.homeHybridState.marker.getLatLng();
+        var popup = window.homeHybridState.marker.getPopup();
+        if (popup) { popup.setLatLng(markerPos); }
+    });
+
+    // On drag end — update lat/lng and fetch new locality
+    window.homeHybridState.marker.on('dragend', function(e) {
+        var newLat = window.homeHybridState.marker.getLatLng().lat;
+        var newLng = window.homeHybridState.marker.getLatLng().lng;
+        $('#homeAddrLat').val(newLat);
+        $('#homeAddrLng').val(newLng);
+
+        var popup = window.homeHybridState.marker.getPopup();
+        if (popup) {
+            popup.setLatLng(window.homeHybridState.marker.getLatLng());
+            if (!popup.isOpen()) { window.homeHybridState.marker.openPopup(); }
+        }
+
+        homeGetCurrentLocality(newLat, newLng);
+    });
+
+    // Initial locality fetch
+    homeGetCurrentLocality(lat, lng);
+
+    // Fix map rendering in modal
+    setTimeout(function() {
+        if (window.homeHybridState.map) { window.homeHybridState.map.invalidateSize(); }
+    }, 100);
+}
+
+/**
+ * Reverse geocodes lat/lng to get locality details via maps_mongodb API.
+ * Updates form fields with the result.
+ */
+function homeGetCurrentLocality(currLat, currLng) {
+    var userDataStr = localStorage.getItem('userdata');
+    if (!userDataStr || userDataStr == '' || userDataStr == 'null') return;
+    var userData = JSON.parse(userDataStr);
+
+    var params = $.param({
+        lat: currLat,
+        lng: currLng,
+        businessId: window.businessId || pId,
+        contactId: userData.contactId,
+        contactMappingId: userData.contactMappingId
+    });
+
+    $.ajax({
+        url: origin + '/maps_mongodb/getGeocodeAddress?' + params,
+        type: 'GET',
+        dataType: 'json',
+        headers: { 'Token': userData.token }
+    }).done(function(result) {
+        if (result && result.status == 1) {
+            $('#homeAddrLocality').val(result.locality);
+            $('#homeAddrCity').val(result.city);
+            $('#homeAddrLat').val(result.latitude);
+            $('#homeAddrLng').val(result.longitude);
+            $('#homeAddrLocalityVisible').val(result.locality);
+            $('#homeAddrCityVisible').val(result.city);
+            $('#homeAddrMapLocality').text(result.locality || 'Unknown locality');
+            $('#homeAddrMapFullAddress').text((result.locality || '') + ', ' + (result.city || ''));
+            $('#homeAddrMapInfo').show();
+            // Enable save button — location loaded
+            homeSetSaveButtonState(true, 'Save Address');
+        } else {
+            $('#homeAddrMapLocality').text('Location not serviceable');
+            $('#homeAddrMapFullAddress').text('');
+            $('#homeAddrMapInfo').show();
+            homeSetSaveButtonState(false, 'Location not serviceable');
+        }
+    }).fail(function() {
+        $('#homeAddrMapLocality').text('Location not serviceable');
+        $('#homeAddrMapFullAddress').text('Please try a different location');
+        $('#homeAddrMapInfo').show();
+        homeSetSaveButtonState(false, 'Location not serviceable');
+    });
+}
+
+/**
+ * Saves a new address from the home page form via addDeliveryAddress API.
+ * On success, closes the form and reopens saved addresses modal.
+ */
+function saveHomeAddress() {
+    var addressLine1 = $('#homeAddrLine1').val().trim();
+    var addressLine2 = $('#homeAddrLine2').val().trim();
+    var phone = $('#homeAddrPhone').val().trim();
+    var lat = $('#homeAddrLat').val();
+    var lng = $('#homeAddrLng').val();
+    var city = $('#homeAddrCity').val();
+    var state = $('#homeAddrState').val();
+    var pincode = $('#homeAddrPincode').val();
+    var locality = $('#homeAddrLocality').val();
+    var addrType = $('input[name="homeAddrType"]:checked').val() || 'Home';
+
+    // Validation
+    if (!addressLine1 || addressLine1.length < 4) {
+        $('#homeAddrError').removeClass('d-none').text('Please enter House/Flat/Block No. (min 4 characters)');
+        return;
+    }
+    if (addressLine1.length > 25 && /^[a-zA-Z0-9._-]+$/.test(addressLine1)) {
+        $('#homeAddrError').removeClass('d-none').text('Please enter a valid input');
+        return;
+    }
+    if (!phone || phone.length !== 10 || !/^\d{10}$/.test(phone)) {
+        $('#homeAddrError').removeClass('d-none').text('Please enter a valid 10-digit phone number');
+        return;
+    }
+    if (!lat || !lng) {
+        $('#homeAddrError').removeClass('d-none').text('Please select a location on the map');
+        return;
+    }
+
+    // Map address type to numeric
+    var typeMap = { 'Home': 1, 'Office': 2, 'Other': 3, 'Hotel': 4 };
+    var addressTypeId = typeMap[addrType] || 3;
+    var email = $('#homeAddrEmail').val() ? $('#homeAddrEmail').val().trim() : '';
+
+    // Get user data
+    var userData = localStorage.getItem('userdata');
+    if (!userData) {
+        $('#homeAddrError').removeClass('d-none').text('Please login first');
+        return;
+    }
+
+    var parsed = JSON.parse(userData);
+    var contactMappingId = parsed.contactMappingId;
+    var token = parsed.token;
+    var contactId = parsed.contactId;
+
+    // Disable button
+    $('#homeAddrSaveBtn').prop('disabled', true).text('Saving...');
+
+    var url = origin + '/client/addDeliveryAddress/' + pId + '/' + contactMappingId + '/' + token;
+
+    $.ajax({
+        url: url,
+        type: 'POST',
+        data: {
+            addressLine1: addressLine1,
+            addressLine2: addressLine2,
+            locality: locality,
+            city: city,
+            state: state,
+            pinCode: pincode,
+            mobile: phone,
+            latitude: lat,
+            longitude: lng,
+            name: addressTypeId,
+            type: addressTypeId,
+            contactId: contactId,
+            email: email
+        },
+        dataType: 'json',
+        success: function(result) {
+            $('#homeAddrSaveBtn').prop('disabled', false).text('Save Address');
+            if (result.status == 1) {
+                // Store deliveryAddressId so checkout can auto-select this address
+                if (result.rows && result.rows.deliveryAddressId) {
+                    localStorage.setItem('deliveryAddressId', result.rows.deliveryAddressId);
+                    localStorage.setItem('selectedDeliveryAddressId', result.rows.deliveryAddressId);
+                }
+                // Success — go back to saved addresses step
+                openLoginOrSavedAddresses();
+            } else {
+                $('#homeAddrError').removeClass('d-none').text(result.msg || 'Failed to save address');
+            }
+        },
+        error: function() {
+            $('#homeAddrSaveBtn').prop('disabled', false).text('Save Address');
+            $('#homeAddrError').removeClass('d-none').text('Network error. Please try again.');
+        }
+    });
+}
+
+/**
+ * "Go to current location" button in home address form map.
+ * Uses browser geolocation to center map on user's current position.
+ */
+function homeAddrGoToCurrentLocation() {
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(function(position) {
+            var lat = position.coords.latitude;
+            var lng = position.coords.longitude;
+
+            // Store as user location
+            localStorage.setItem('userLat', lat);
+            localStorage.setItem('userLng', lng);
+            // Explicit "Go to current location" — clear prior saved-address so cart uses GPS.
+            localStorage.removeItem('deliveryAddressId');
+            localStorage.removeItem('selectedDeliveryAddressId');
+            localStorage.removeItem('selectedAddressId');
+            // Drop the previously-selected outlet so the old outlet's cart / locality list
+            // is not reused with the new GPS coords.
+            localStorage.removeItem('business');
+            localStorage.removeItem('slug');
+            // Legacy coord keys written by addressManager.updateLocationData — clear too.
+            localStorage.removeItem('lat');
+            localStorage.removeItem('lng');
+            localStorage.removeItem('formatted_Address');
+            localStorage.setItem('userLocSource', 'gps');
+
+            if (homeAddressMap && homeAddressMarker) {
+                // Map already initialized — just move it
+                var pos = { lat: lat, lng: lng };
+                homeAddressMap.setCenter(pos);
+                homeAddressMap.setZoom(16);
+                homeAddressMarker.setPosition(pos);
+                updateHomeAddressFromLatLng(lat, lng);
+            } else {
+                // Map not initialized yet — init with these coordinates
+                loadGoogleMapsIfNeeded(function() {
+                    initHomeAddressMap();
+                    // After init, move to current location
+                    setTimeout(function() {
+                        if (homeAddressMap && homeAddressMarker) {
+                            var pos = { lat: lat, lng: lng };
+                            homeAddressMap.setCenter(pos);
+                            homeAddressMap.setZoom(16);
+                            homeAddressMarker.setPosition(pos);
+                            updateHomeAddressFromLatLng(lat, lng);
+                        }
+                    }, 300);
+                });
+            }
+        }, function(error) {
+            alert('Unable to fetch your location. Please search manually.');
+        });
+    } else {
+        alert('Geolocation is not supported by your browser.');
+    }
+}
+
+/**
+ * Called when user selects an order type from #orderTypeModal.
+ * Filters nearby outlets by the selected order type, picks the nearest one,
+ * sets localStorage/cookies, shows countdown modal, then redirects to menu.
+ * @param {number} orderTypeId - 1=Delivery, 2=PickUp, 3=DineIn, 4=InCar
+ */
+/**
+ * Skip to menu — used when location is not serviceable but user wants to browse anyway.
+ * Picks the first available outlet regardless of location.
+ */
+// function skipToMenu() {
+//     closeLocationFlow();
+//     // Use storesDetails (all outlets) if available, pick the first one
+//     if (typeof storesDetails !== 'undefined' && storesDetails.length > 0) {
+//         var outlet = storesDetails[0];
+//         var outletSlug = outlet['web_slug'] || outlet['slug'] || '';
+//         var outletCity = outlet['city'] || '';
+//         localStorage.setItem('slug', outletSlug);
+//         localStorage.setItem('city', outletCity);
+//         localStorage.setItem('locality', outlet['locality'] || '');
+//         localStorage.setItem('business', outlet['id'] || '');
+//         document.cookie = "slug=" + outletSlug + "; path=/";
+//         document.cookie = "view_business=" + outlet['id'] + "; path=/";
+//         window.location.href = origin + '/order/' + outletSlug;
+//     }
+// }
+
+/**
+ * Returns true if the outlet is currently within its operating hours.
+ * Handles overnight windows (e.g. 22:00 → 02:00) and 24-hour outlets.
+ * Requires onlineOrdersStartHours, onlineOrdersStartMins, onlineOrdersEndHours,
+ * onlineOrdersEndMins to be present in the outlet object (returned by locateNearestStore).
+ */
+function isOutletOpen(outlet) {
+    if (outlet['ecomm'] == 1 || outlet['localityMapping'] == 4) return true;
+    var now = new Date();
+    var currentMins = now.getHours() * 60 + now.getMinutes();
+    var startMins = parseInt(outlet['onlineOrdersStartHours'] || 0) * 60 + parseInt(outlet['onlineOrdersStartMins'] || 0);
+    var endMins   = parseInt(outlet['onlineOrdersEndHours']   || 0) * 60 + parseInt(outlet['onlineOrdersEndMins']   || 0);
+    if (endMins < startMins) {
+        // Overnight window (e.g. 22:00 → 02:00)
+        return currentMins >= startMins || currentMins < endMins;
+    }
+    return currentMins >= startMins && currentMins < endMins;
+}
+
+function selectOrderTypeAndRedirect(orderTypeId) {
+    var flagMap = {
+        1: 'onlineOrdersDelivery',
+        2: 'onlineOrdersSelfPickup',
+        3: 'dineInOrders',
+        4: 'inCarOrders',
+        5: 'reservationAllowed',
+        6: 'uengage_pay'
+    };
+    var cookieMap = {
+        1: 'delivery',
+        2: 'pick_up',
+        3: 'dine_in',
+        4: 'in_car',
+        5: 'reservation',
+        6: 'direct_pay'
+    };
+    var flag = flagMap[orderTypeId];
+    if (!flag) return;
+
+    // Get stored user location
+    var userLat = localStorage.getItem('userLat');
+    var userLng = localStorage.getItem('userLng');
+
+    if (!userLat || !userLng) {
+        changeUserLocation();
+        return;
+    }
+
+    // If no user address is stored (e.g. outlet was pre-selected from store locator without
+    // the user entering their own location), collect the location first so the nearest outlet
+    // is found from the user's actual position — applies to all order types.
+    var storedAddress = localStorage.getItem('userAddress');
+    if (!storedAddress || storedAddress === '' || storedAddress === 'null') {
+        localStorage.setItem('orderType', String(orderTypeId));
+        document.cookie = "order_type=" + cookieMap[orderTypeId] + "; path=/";
+        changeUserLocation();
+        return;
+    }
+
+    // Set order type immediately
+    localStorage.setItem('orderType', orderTypeId);
+    document.cookie = "order_type=" + cookieMap[orderTypeId] + "; path=/";
+
+    // Show loading state on the clicked card
+    $('#orderTypeButtonsContainer .order-type-card').css('pointer-events', 'none');
+    $('#orderTypeBtn_' + orderTypeId).css('opacity', '0.6').append(' <span class="spinner-border spinner-border-sm" style="margin-left:4px;"></span>');
+
+    // Use cached outlet list from showOrderTypeSelector if available; otherwise re-fetch
+    function _proceedWithOutlets(outletList) {
+        // Reset loading state
+        $('#orderTypeButtonsContainer .order-type-card').css({'pointer-events': 'auto', 'opacity': '1'});
+        $('#orderTypeBtn_' + orderTypeId + ' .spinner-border').remove();
+
+        // Filter outlets that support the selected order type
+        var matchingOutlets = (outletList || []).filter(function(o) { return o[flag] == 1; });
+
+        if (matchingOutlets.length === 0) {
+            // No serviceable outlet for this order type
+            showLocationStep('notServiceable');
+            return;
+        }
+
+        // Pick the nearest *open* outlet; fall back to nearest closed one if all are closed
+        var openOutlets = matchingOutlets.filter(function(o) { return isOutletOpen(o); });
+        var selectedOutlet = openOutlets.length > 0 ? openOutlets[0] : matchingOutlets[0];
+
+            // Set outlet data in localStorage and cookies
+            var outletSlug = selectedOutlet['web_slug'] || selectedOutlet['slug'] || '';
+            var outletCity = selectedOutlet['city'] || '';
+            var outletLocality = selectedOutlet['locality'] || '';
+            var outletId = selectedOutlet['id'] || '';
+
+            localStorage.setItem('slug', outletSlug);
+            localStorage.setItem('city', outletCity);
+            localStorage.setItem('locality', outletLocality);
+            localStorage.setItem('business', outletId);
+            document.cookie = "slug=" + outletSlug + "; path=/";
+            document.cookie = "view_business=" + outletId + "; path=/";
+
+            // Start location timer
+            if (typeof startLocationTimer === 'function') {
+                startLocationTimer();
+            }
+
+            // Show redirect countdown step if available, else redirect immediately
+            var orderTypeLabels = { 1: 'Delivery', 2: 'Pick Up', 3: 'Dine In', 4: 'In Car', 5: 'Reservation', 6: 'Direct Pay' };
+            if ($('[data-step="redirect"]').length) {
+                $('#redirectModal_address').text(localStorage.getItem('userAddress') || '');
+                $('#redirectModal_outlet').text(outletLocality ? outletLocality + ', ' + outletCity : outletCity);
+                $('#redirectModal_orderType').text(orderTypeLabels[orderTypeId] || '');
+                var countdown = 3;
+                $('#redirectCountdown').text(countdown);
+                showLocationStep('redirect');
+                window.redirectCountdownTimer = setInterval(function() {
+                    countdown--;
+                    $('#redirectCountdown').text(countdown);
+                    if (countdown <= 0) {
+                        clearInterval(window.redirectCountdownTimer);
+                        window.redirectCountdownTimer = null;
+                        closeLocationFlow();
+                        // Pending cat-15 item click (direct /order/webSlug/section/item)
+                        if (window._pendingCat15Url) {
+                            var url = window._pendingCat15Url;
+                            window._pendingCat15Url = null;
+                            window.location.href = url;
+                            return;
+                        }
+                        // Pending banner click
+                        if (window._pendingBannerUrl) {
+                            var url = window._pendingBannerUrl;
+                            window._pendingBannerUrl = null;
+                            window.location.href = url;
+                            return;
+                        }
+                        var _ps = window._pendingFeaturedSection || '';
+                        var _pi = window._pendingFeaturedItem || '';
+                        window._pendingFeaturedSection = null;
+                        window._pendingFeaturedItem = null;
+                        window._pendingFeaturedSlug = null;
+                        if (orderTypeId == 5) {
+                            window.location.href = window.location.origin + '/reservation/' + outletCity + '/' + outletSlug;
+                        } else if (orderTypeId == 6) {
+                            window.location.href = window.location.origin + '/direct-pay/' + outletSlug;
+                        } else if (typeof openOrderPage === 'function') {
+                            openOrderPage(outletSlug, _ps, _pi, outletLocality, outletCity, outletId, false);
+                        } else {
+                            var _ps = window._pendingFeaturedSection || ''; var _pi = window._pendingFeaturedItem || '';
+                            window._pendingFeaturedSection = null; window._pendingFeaturedItem = null; window._pendingFeaturedSlug = null;
+                            var slug = outletSlug;
+                            if (slug.includes('order/order/')) slug = slug.replace(/order\/order\//g, 'order/');
+                            else if (!slug.includes('order/')) slug = 'order/' + slug;
+                            var href = window.location.origin + '/' + slug;
+                            if (_ps || _pi) { var _p = []; if (_ps) _p.push('section_slug=' + _ps); if (_pi) _p.push('item_slug=' + _pi); href += '?' + _p.join('&'); }
+                            window.location.href = href;
+                        }
+                    }
+                }, 1000);
+            } else {
+                closeLocationFlow();
+                setTimeout(function() {
+                    // Pending cat-15 item click (direct /order/webSlug/section/item)
+                    if (window._pendingCat15Url) {
+                        var url = window._pendingCat15Url;
+                        window._pendingCat15Url = null;
+                        window.location.href = url;
+                        return;
+                    }
+                    // Pending banner click
+                    if (window._pendingBannerUrl) {
+                        var url = window._pendingBannerUrl;
+                        window._pendingBannerUrl = null;
+                        window.location.href = url;
+                        return;
+                    }
+                    var _ps = window._pendingFeaturedSection || '';
+                    var _pi = window._pendingFeaturedItem || '';
+                    window._pendingFeaturedSection = null;
+                    window._pendingFeaturedItem = null;
+                    window._pendingFeaturedSlug = null;
+                    if (orderTypeId == 5) {
+                        window.location.href = window.location.origin + '/reservation/' + outletCity + '/' + outletSlug;
+                    } else if (orderTypeId == 6) {
+                        window.location.href = window.location.origin + '/direct-pay/' + outletSlug;
+                    } else if (typeof openOrderPage === 'function') {
+                        openOrderPage(outletSlug, _ps, _pi, outletLocality, outletCity, outletId, false);
+                    } else {
+                        var _ps = window._pendingFeaturedSection || ''; var _pi = window._pendingFeaturedItem || '';
+                        window._pendingFeaturedSection = null; window._pendingFeaturedItem = null; window._pendingFeaturedSlug = null;
+                        var slug = outletSlug;
+                        if (slug.includes('order/order/')) slug = slug.replace(/order\/order\//g, 'order/');
+                        else if (!slug.includes('order/')) slug = 'order/' + slug;
+                        var href = window.location.origin + '/' + slug;
+                        if (_ps || _pi) href += '?section_slug=' + _ps + '&item_slug=' + _pi;
+                        window.location.href = href;
+                    }
+                }, 300);
+            }
+    } // end _proceedWithOutlets
+
+    // Use cached outlet list from showOrderTypeSelector if available; otherwise re-fetch
+    if (window._locateNearestStoreCache) {
+        _proceedWithOutlets(window._locateNearestStoreCache);
+    } else {
+        $.ajax({
+            url: origin + '/client/locateNearestStore',
+            data: { businessId: pId, lat: userLat, lng: userLng },
+            type: 'GET',
+            dataType: 'json',
+            success: function(data) {
+                window._locateNearestStoreCache = (data.status == 1 && data.data && data.data.length > 0) ? data.data : [];
+                _proceedWithOutlets(window._locateNearestStoreCache);
+            },
+            error: function() {
+                $('#orderTypeButtonsContainer .order-type-card').css({'pointer-events': 'auto', 'opacity': '1'});
+                $('#orderTypeBtn_' + orderTypeId + ' .spinner-border').remove();
+                showLocationStep('notServiceable');
+            }
+        });
+    }
+}
+
+/**
+ * Page load — show location modal if needed
+ */
+$(document).ready(function() {
+        // SINGLE OUTLET: no location flow — seed the only outlet, never show the popup.
+        if (window.isSingleOutlet) {
+            seedSingleOutletLocation();
+            if (typeof checkOrderTypeAvailablities === 'function') {
+                checkOrderTypeAvailablities(1);
+            }
+        }
+        // Show location modal if location data is not complete (multi-outlet only)
+        else if (((typeof storesDetails !== 'undefined') ? storesDetails.length : 0) >= 1) {
+            var locationDataComplete = !!(localStorage.getItem('slug') && localStorage.getItem('business'));
+            if (!locationDataComplete) {
+                // Don't show location modal if profile update modal is open
+                if ($('#updateProfileModal_new').hasClass('show') || $('#updateProfileModal_new').is(':visible')) {
+                    // Profile modal takes priority
+                } else {
+                    // Check if user is logged in — show saved addresses directly
+                    var userData = localStorage.getItem('userdata');
+                    if (userData && userData != '' && userData != 'null') {
+                        openLoginOrSavedAddresses();
+                    } else {
+                        showLocationStep('location');
+                    }
+
+                    if (typeof trackEvent === 'function') {
+                        trackEvent("location_popup");
+                    }
+                }
+            } else {
+                // Location data exists, update order type availabilities
+                if (typeof checkOrderTypeAvailablities === 'function') {
+                    checkOrderTypeAvailablities(1);
+                }
+            }
+        }
+
+        if (typeof pId !== 'undefined'){
+            
+            if(pId == 7175 || pId == 65070){
+    
+                $(".getStoresList").click(function() {
+        
+                fetchSlug= $(this).data('slug');
+                });
+        
+            }else{
+                $("body .getStoresList").click(function() {
+                    // Single outlet: nothing to choose — seed and go straight to the order page.
+                    if (window.isSingleOutlet) {
+                        seedSingleOutletLocation();
+                        var _soSlug = localStorage.getItem('slug');
+                        if (_soSlug && _soSlug !== 'null') {
+                            openOrderPage(_soSlug, $(this).data('slug') || '');
+                            return;
+                        }
+                    }
+                    // Check if outlet_selector is enabled (oulet_select from header_config.php)
+                    if (typeof oulet_select !== 'undefined' && (oulet_select == 1 || oulet_select == "1")) {
+                        // Show location modal popup to fetch all store list
+                        fetchSlug = $(this).data('slug');
+                        var slug = $(this).data('slug');
+                        
+                        callGetStoresName({
+                            slug: slug,
+                            pId: pId,
+                            orderType: order_selected_tab,
+                            success: function(result) {
+                                var selectedCity = localStorage.getItem('city') ?? null;
+                                var citySelector = $('#citySelector_location');
+                                populateCityDropdown(result, citySelector, order_selected_tab, selectedCity);
+                                
+                                var selectedOutlet = localStorage.getItem('business');
+                                if(selectedCity != '' && selectedCity != null && selectedOutlet != '' && selectedOutlet != null) {
+                                    showOutletNew(selectedCity, pId, 1);
+                                }
+                            
+                                // Show location modal
+                                if (!locationFetchModal) {
+                                    // locationFetchModal handled by unified #locationFlowModal
+                                }
+                                showLocationStep('location');
+                            },
+                            error: function(xhr, status, error) {
+                                if (status !== 'abort') {
+                                    $('#citySelector_location').html('<option value="" disabled>Error loading cities</option>');
+                                }
+                            }
+                        });
+                    } else {
+                        // Default behavior: call fetchStoresList directly
+                        fetchStoresList($(this).data('slug'));
+                    }
+                });
+            }
+        }else{
+            $("body .getStoresList").click(function() {
+                fetchSlug = $(this).data('slug');
+                var slug = $(this).data('slug');
+                
+                callGetStoresName({
+                    slug: slug,
+                    pId: pId,
+                    orderType: order_selected_tab,
+                    success: function(result) {
+                        var citySelector = $('#citySelector_location');
+                        populateCityDropdown(result, citySelector, order_selected_tab, null);
+                    },
+                    error: function(xhr, status, error) {
+                        if (status !== 'abort') {
+                            $('#citySelector_location').html('<option value="" disabled>Error loading cities</option>');
+                        }
+                    }
+                });
+            });
+        }
+    
+       $("#enterAddressButton").click(function() {
+        // Hide the "getStoreList" modal
+          closeLocationFlow();
+        });
+        
+        $('#enteraddressItem').on('hidden.bs.modal', function () {
+            $('.outletitem_newList').addClass('d-none');
+            $('#locationitem_emptyImage').removeClass('d-none');
+            $('#notServiceitem_image').addClass('d-none');
+            $('#searchitem_locality_new').val('');
+        });
+        
+        $('#locationfetchmodal').on('hidden.bs.modal', function () {
+            //console.log('[CityLoader] Modal hidden, resetting preload flags');
+            $('#error-msg-show').addClass('d-none');
+            isPreloadingCities = false; // Reset flag when modal is closed
+            preloadCompletedForModal = false; // Reset completed flag too
+            lastPopulatedCityData = null; // Clear stored data when modal closes
+        });
+
+
+        $('.video').each(function(el){
+            var _this = $(this);
+            _this.on('mouseover', function(ev) {
+         
+              _this[0].src += "&autoplay=1";
+              ev.preventDefault();
+        
+            });
+          });
+    
+        const slideWrapper = $(".main-slider");
+    
+        if(slideWrapper.length > 0)
+        {
+            // Initialize
+            slideWrapper.on("init", function (slick) {
+                const slickSlider = $(slick.$slider);
+                setTimeout(function () {
+                    playPauseVideo(slickSlider, "play");
+                }, 1000);
+            });
+    
+            slideWrapper.on("beforeChange", function (event, slick) {
+                const slickSlider = $(slick.$slider);
+                playPauseVideo(slickSlider, "pause");
+            });
+    
+            slideWrapper.on("afterChange", function (event, slick) {
+                const slickSlider = $(slick.$slider);
+                playPauseVideo(slickSlider, "play");
+            });
+        }
+    });
+
+    function openModalAndToggleTab()
+    {
+		var orderType = localStorage.getItem('orderType');
+  		if(orderType != 2){
+				$('#pickuploca').html('');
+				$('#pickupcity').html('');
+				$('#pickupbusi').html('the outlet.');
+				$('#pickupmodal').modal('show');
+		}
+    }
+
+    function openPromoModal(index) {
+
+        if (typeof promoCodes !== 'undefined'){
+            var promoCode= promoCodes;
+    
+            var pData= promoCode[index];
+            var l = '' + pData.code + '';
+        
+            var promodetail = '<h4>' + pData.title + '</h4>';
+            if (pData.description != null && pData.description != 'null' && pData.description != '') {
+                promodetail += '<p>' + pData.description + '</p>';
+            }
+        
+        
+            $('#copytxt').html("");
+            $('#copytxt').val(l);
+            $('#promo-d').html("");
+            $('#promo-d').html(promodetail);
+        
+            $('#promomodal').modal('show');
+        }
+        
+    }
+    
+    /*Promo Code*/
+    function copyText() {
+        /* Get the text field */
+        var copyText = document.getElementById("copytxt");
+            copyText.select();
+    
+            /* Copy the text inside the text field */
+            document.execCommand("copy");
+        
+            /* Alert the copied text */
+            $('#promo').modal('hide');
+            $('#suceess').modal('show');
+            $('#sucess-msg').html('Promo Code Copied!');
+            setTimeout(function() {
+                $('#suceess').modal('hide')
+            }, 2000);
+        
+            // copyText.select(false);
+            copyText.blur();
+            window.getSelection().removeAllRanges();
+        
+        
+    
+    }
+
+    function expand_detail_description(id) {
+		$('.less_desc' + id).addClass('d-none');
+		$('.more_desc' + id).removeClass('d-none');
+	}
+
+	function collapse_detail_description(id) {
+		$('.less_desc' + id).removeClass('d-none');
+		$('.more_desc' + id).addClass('d-none');
+	}
+
+    function openOrderItemPage(storeSlug,locality = '',city = '') {
+        if (storeSlug != '') {
+            
+            const dataId = fetchSlug;
+            
+            if(typeof webengage_tag == "function"){
+
+                webengage.track("Location Selected", {
+                    "City" : city,
+                    "Locality" : locality
+                });
+            }
+
+            var url = origin + "/order/" + storeSlug + "?itemid=" + dataId;
+            window.location.href = url;
+        }
+
+    }
+
+
+    function CurrentItemAddress() {
+        // Note: This function is called when user explicitly requests location for an item
+        // So we should allow geolocation even if city/locality exist in localStorage
+        // The blocking logic should only apply to automatic calls on page load
+        
+        // Detect Safari browser - but still allow geolocation if user explicitly requests it
+        var isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        if (isSafari) {
+            console.log("CurrentItemAddress: Safari detected → Proceeding with geolocation (user-initiated).");
+        }
+        
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(getitem_location, getitem_error);
+        }
+    }
+
+    function getitem_error(error) {
+        let errorMessage = "An unknown error occurred.";
+        switch (error.code) {
+            case error.PERMISSION_DENIED:
+                errorMessage = "User denied the request for Geolocation.";
+                break;
+            case error.POSITION_UNAVAILABLE:
+                errorMessage = "Location information is unavailable.";
+                break;
+            case error.TIMEOUT:
+                errorMessage = "The request to get user location timed out.";
+                break;
+        }
+        $('#error-msg-show').removeClass('d-none');
+        $('#error-msg-show').html(errorMessage);
+
+    }
+
+    function getitem_location(location) {
+        $('#error-msg-show').addClass('d-none');
+        var lat = location.coords.latitude;
+        var long = location.coords.longitude;
+
+        localStorage.setItem("searchLocalityInput", JSON.stringify([lat, long]));
+        localStorage.setItem('userLat', lat);
+        localStorage.setItem('userLng', long);
+        localStorage.setItem('userAddressLabel', 'Other');
+        // User-initiated "current location" — clear prior saved-address selection.
+        localStorage.removeItem('deliveryAddressId');
+        localStorage.removeItem('selectedDeliveryAddressId');
+        localStorage.removeItem('selectedAddressId');
+        // Drop previously-selected outlet so old cart / outlet-centric locality list is not reused.
+        localStorage.removeItem('business');
+        localStorage.removeItem('slug');
+        // Legacy coord keys written by addressManager.updateLocationData — clear too.
+        localStorage.removeItem('lat');
+        localStorage.removeItem('lng');
+        localStorage.removeItem('formatted_Address');
+        localStorage.setItem('userLocSource', 'gps');
+
+        // Reverse geocode to get address, then show order type selector
+        if (typeof google !== 'undefined' && google.maps && google.maps.Geocoder) {
+            var geocoder = new google.maps.Geocoder();
+            geocoder.geocode({ 'location': { lat: parseFloat(lat), lng: parseFloat(long) } }, function(results, status) {
+                var address = (status === 'OK' && results[0]) ? results[0].formatted_address : (lat + ', ' + long);
+                localStorage.setItem('userAddress', address);
+                showOrderTypeSelector(lat, long);
+            });
+        } else {
+            localStorage.setItem('userAddress', lat + ', ' + long);
+            showOrderTypeSelector(lat, long);
+        }
+    }
+
+function handlePincodeApiCall(pincode_data = '') {
+        if(pincode_data == ''){
+          var pincode = $('#search_pincode').val();
+          var pincodePattern = /^\d{6}$/;
+    
+          if(pincode == '' || !pincodePattern.test(pincode)){
+            $('#notService_imagepincode').show();
+            $('#errorpincode_text').html('');
+            $('#errorpincode_text').html('Please enter a valid pincode');
+            return false;
+          }
+
+        }else{
+            var pincode = pincode_data;
+        }
+        
+    
+            $.ajax({
+                url: origin + '/client/matchPinCodeData',
+                type: 'POST',
+                data: { pincode: pincode , businessId: pId},
+                dataType:"json",
+                success: function(response) {
+                    
+                    if(response['status'] == 1 && response['data']['pincodeData'] != false && response['data']['pincodeData']?.length > 0){
+                        var data = response?.data;
+                        $('#notService_imagepincode').hide();
+                        $('#search_pincode').val('');
+                        $('#notService_image').hide();
+                        $('#location_emptyImage').hide();
+                        var slug = data['businessData'][0]['slug'];
+                        $('#enterpincode').modal('hide');
+                        window.location.href = origin + '/order/' + slug;
+                    }else{
+                        $('#notService_imagepincode').show();
+                        $('#errorpincode_text').html('');
+                        $('#errorpincode_text').html('Not Delivering to this area');
+                    }
+    
+                },
+                error: function(error) {
+                    $('#notService_imagepincode').hide();
+                    alert('Error:', error);
+                }
+            });
+        
+    }
+
+    $('#enterpincode').on('hidden.bs.modal', function () {
+        $('#search_pincode').val('');
+        $('#notService_imagepincode').hide();
+    });
+    
+
+        $('.your-slider-class').on('init', function(event, slick) {
+            $(this).removeClass('invisible');
+        })
+
+        $('.your-slider-class').on('init', function(event, slick) {
+            $(this).removeClass('invisible');
+        })
+
+/*navigation dropdown navbar*/
+$(document).ready(function(){	
+    if ($(window).width() <= 991) {
+    $(".site-nav .fl").on('click', function(event) {
+        var $fl = $(this);
+        $(this).parent().siblings().find('.submenu').slideUp();
+        $(this).parent().siblings().find('.fl').addClass('la-angle-right');       
+        if($fl.hasClass('la-angle-right')){
+        $fl.removeClass('la-angle-right').addClass('la-angle-down');
+        }else{
+        $fl.removeClass('la-angle-down').addClass('la-angle-right');
+        }
+        $fl.next(".submenu").slideToggle();
+    });
+    }
+});
+
+// Function to fetch stores list for outlet selection (matching ue_default behavior)
+function fetchStoresList(slug){
+    var selectedOutlet = localStorage.getItem('business');
+    
+    callGetStoresName({
+        slug: slug,
+        pId: pId,
+        orderType: order_selected_tab,
+        success: function(result) {
+            var selectedCity = localStorage.getItem('city') ?? null;
+            var citySelector = $('#citySelector_location');
+            var cities = extractCitiesFromResult(result);
+            var emptyMessage = (order_selected_tab === 2) ? 'No pickup locations available' : 'No cities available';
+            var data = buildCityDropdownHTML(cities, selectedCity, emptyMessage);
+            
+            // Use helper function to prevent duplicate API calls
+            populateCitySelectorSafely(data, selectedCity, selectedOutlet, pId);
+        
+            if (!locationFetchModal) {
+                // locationFetchModal handled by unified #locationFlowModal
+            }
+            showLocationStep('location');
+        },
+        error: function(xhr, status, error) {
+            if (status !== 'abort') {
+                $('#citySelector_location').html('<option value="" disabled>Error loading cities</option>');
+            }
+        }
+    });
+}
+
+// Helper function to safely populate citySelector without triggering onchange event
+function populateCitySelectorSafely(data, selectedCity, selectedOutlet, pId) {
+    var citySelector = $('#citySelector_location');
+    var originalOnchange = citySelector.attr('onchange');
+    
+    // Temporarily remove onchange handler to prevent duplicate API calls
+    citySelector.removeAttr('onchange');
+    
+    // Populate the dropdown
+    citySelector.html('');
+    citySelector.html(data);
+    
+    // Restore onchange handler after DOM update
+    setTimeout(function() {
+        if (originalOnchange) {
+            citySelector.attr('onchange', originalOnchange);
+        }
+    }, 50);
+    
+    // Call showOutletNew only if city and outlet are selected
+    if (selectedCity != '' && selectedCity != null && selectedOutlet != '' && selectedOutlet != null) {
+        showOutletNew(selectedCity, pId, 1);
+    }
+}
+
+function getStoresList(section_slug = '',item_slug = '', store_count, isPickupFiltering = false) {
+    var selectedOutlet = localStorage.getItem('business');
+    var origin = window.location.origin;
+    var url = origin + '/client/getStoresName';
+    var data = '';
+    // Store section/item slug for later use
+    // if(section_slug != ''){
+    //     localStorage.setItem('selectedSection', section_slug);
+    // }
+    // Clear item slug if empty, otherwise set it
+    if(item_slug != '' && item_slug != null){
+       // localStorage.setItem('selectedItem', item_slug);
+        // DO NOT overwrite the store slug with item slug - keep them separate
+    } else {
+        // Clear any previous item slug when navigating to just a section
+        localStorage.removeItem('selectedItem');
+    }
+    var web_slug = localStorage.getItem('slug');
+    // Check if outlet_selector is enabled
+    var outletSelectorEnabled = (typeof oulet_select !== 'undefined' && (oulet_select == 1 || oulet_select == "1"));
+    
+    // If store_count is not provided, use stores_count from global variable or default to 1
+    if (typeof store_count === 'undefined' || store_count === null || store_count === '') {
+        store_count = (typeof stores_count !== 'undefined' && stores_count !== null && stores_count !== '') ? parseInt(stores_count) : 1;
+    } else {
+        // Convert to number if it's a string (e.g., '1' from PHP)
+        store_count = parseInt(store_count) || 1;
+    }
+    
+    // Ensure store_count is a number
+    store_count = Number(store_count);
+    if (isNaN(store_count)) {
+        store_count = 1;
+    }
+    
+    ////console.log('getStoresList - section_slug:', section_slug, 'store_count:', store_count, 'type:', typeof store_count, 'isGreaterThan1:', (store_count > 1));
+    
+    // if(pId == 7175 || pId == 55217 || pId == 65070){
+    if(store_count > 1){
+        if(web_slug == '' || web_slug == null || web_slug == 'null' || web_slug == 'undefined'){
+            // Use new flow: logged in → saved addresses, logged out → location modal
+            var _ud = localStorage.getItem('userdata');
+            if (_ud && _ud != '' && _ud != 'null' && typeof openLoginOrSavedAddresses === 'function') {
+                openLoginOrSavedAddresses();
+            } else {
+                showLocationStep('location');
+            }
+        }else{
+            // If outlet_selector is enabled, show modal to change outlet instead of redirecting
+            if (outletSelectorEnabled) {
+                // Fetch stores and show modal using centralized API manager
+                callGetStoresName({
+                    slug: section_slug || '',
+                    pId: pId,
+                    orderType: order_selected_tab,
+                    success: function(result) {
+                        var selectedCity = localStorage.getItem('city') ?? null;
+                        var cities = extractCitiesFromResult(result);
+                        var emptyMessage = (order_selected_tab === 2) ? 'No pickup locations available' : 'No cities available';
+                        var data = buildCityDropdownHTML(cities, selectedCity, emptyMessage);
+                        
+                        // Use helper function to prevent duplicate API calls
+                        populateCitySelectorSafely(data, selectedCity, selectedOutlet, pId);
+                        
+                        if (!locationFetchModal) {
+                            // locationFetchModal handled by unified #locationFlowModal
+                        }
+                        showLocationStep('location');
+                    },
+                    error: function(xhr, status, error) {
+                        if (status !== 'abort') {
+                            $('#citySelector_location').html('<option value="" disabled>Error loading cities</option>');
+                            if (!locationFetchModal) {
+                                // locationFetchModal handled by unified #locationFlowModal
+                            }
+                            showLocationStep('location');
+                        }
+                    }
+                });
+            } else {
+                // Default behavior: redirect to order page
+                // openOrderPage(web_slug);
+                openOrderPage(web_slug, section_slug,item_slug,'', '', '');
+            }
+        }
+    }else{
+        // Check if outlet is already selected
+        if(web_slug != '' && web_slug != null && web_slug != 'null' && web_slug != 'undefined'){
+            // If outlet_selector is enabled, show modal to change outlet instead of redirecting
+            if (outletSelectorEnabled) {
+                // Fetch stores and show modal using centralized API manager
+                callGetStoresName({
+                    slug: section_slug || '',
+                    pId: pId,
+                    orderType: order_selected_tab,
+                    success: function(result) {
+                        var selectedCity = localStorage.getItem('city') ?? null;
+                        var cities = extractCitiesFromResult(result);
+                        var emptyMessage = (order_selected_tab === 2) ? 'No pickup locations available' : 'No cities available';
+                        var data = buildCityDropdownHTML(cities, selectedCity, emptyMessage);
+                        
+                        // Use helper function to prevent duplicate API calls
+                        populateCitySelectorSafely(data, selectedCity, selectedOutlet, pId);
+                        
+                        if (!locationFetchModal) {
+                            // locationFetchModal handled by unified #locationFlowModal
+                        }
+                        showLocationStep('location');
+                    },
+                    error: function(xhr, status, error) {
+                        if (status !== 'abort') {
+                            $('#citySelector_location').html('<option value="" disabled>Error loading cities</option>');
+                            if (!locationFetchModal) {
+                                // locationFetchModal handled by unified #locationFlowModal
+                            }
+                            showLocationStep('location');
+                        }
+                    }
+                });
+            } else {
+                // Default behavior: redirect to order page
+                // openOrderPage(web_slug);
+                openOrderPage(web_slug, section_slug,item_slug,'', '', '');
+            }
+        }else{
+            // No outlet selected - for single outlet, fetch and redirect directly (no modal)
+            ////console.log('Single outlet detected (store_count=' + store_count + ') - fetching store and redirecting directly (no modal)');
+            
+            // Set flag to prevent other code from showing modal
+            window.isFetchingSingleOutlet = true;
+            
+            // Hide any modals that might be showing
+            closeLocationFlow();
+            
+            // First, get cities to find the city, then get stores for that city
+            $.ajax({
+                url: url,
+                method: 'POST',
+                data: {
+                    slug: section_slug || '',
+                    pId: pId,
+                    orderType: order_selected_tab
+                },
+                success: function (response) {
+                    var result = JSON.parse(response);
+                    ////console.log('Single outlet - cities API response:', result);
+                    
+                    if (result.status == 1 && result.stores && result.stores.length > 0) {
+                        // Get the first (and only) city
+                        var singleCity = result.stores[0].city;
+                        ////console.log('Single city found:', singleCity);
+                        
+                        // Now fetch stores for this city to get full store details
+                        var storesUrl = origin + '/client/getStores';
+                        $.ajax({
+                            url: storesUrl,
+                            method: 'GET',
+                            data: {
+                                city: singleCity,
+                                parentBusinessId: pId,
+                                orderType: order_selected_tab
+                            },
+                            dataType: 'json',
+                            success: function(storesResponse) {
+                                ////console.log('Single outlet - stores API response:', storesResponse);
+                                
+                                if (storesResponse.status == 1 && storesResponse.loca_list && storesResponse.loca_list.length > 0) {
+                                    // Get the first (and only) store
+                                    var singleStore = storesResponse.loca_list[0];
+                                    var storeSlug = singleStore.web_slug || singleStore.slug || '';
+                                    
+                                    ////console.log('Single store found:', singleStore);
+                                    ////console.log('Store slug:', storeSlug);
+                                    
+                                    if (storeSlug != '') {
+                                        // Save outlet details to localStorage BEFORE redirecting
+                                        localStorage.setItem('business', singleStore.id || '');
+                                        localStorage.setItem('slug', storeSlug);
+                                        localStorage.setItem('city', singleCity || '');
+                                        localStorage.setItem('locality', singleStore.locality || '');
+                                        
+                                        // //console.log('Saved to localStorage:', {
+                                        //     business: localStorage.getItem('business'),
+                                        //     slug: localStorage.getItem('slug'),
+                                        //     city: localStorage.getItem('city'),
+                                        //     locality: localStorage.getItem('locality')
+                                        // });
+                                        
+                                        // Reset flag before redirect
+                                        window.isFetchingSingleOutlet = false;
+                                        
+                                        ////console.log('Redirecting directly to:', storeSlug, '- NO MODAL');
+                                        
+                                        // Redirect directly to order page - no modal needed for single outlet
+                                        openOrderPage(storeSlug, section_slug,item_slug,singleStore.locality || '', singleCity || '', singleStore.id || '');
+                                    } else {
+                                        //console.warn('Store slug not available, showing modal as fallback');
+                                        window.isFetchingSingleOutlet = false;
+                                        // Fallback: if slug is not available, show modal
+                                        if (!locationFetchModal) {
+                                            // locationFetchModal handled by unified #locationFlowModal
+                                        }
+                                        showLocationStep('location');
+                                    }
+                                } else {
+                                    //console.warn('No stores found in stores response, showing modal as fallback');
+                                    window.isFetchingSingleOutlet = false;
+                                    // No stores available - show modal as fallback
+                                    if (!locationFetchModal) {
+                                        // locationFetchModal handled by unified #locationFlowModal
+                                    }
+                                    showLocationStep('location');
+                                }
+                            },
+                            error: function(xhr, status, error) {
+                                //console.error('Error fetching stores for single outlet:', error, xhr);
+                                window.isFetchingSingleOutlet = false;
+                                // On error, show modal as fallback
+                                if (!locationFetchModal) {
+                                    // locationFetchModal handled by unified #locationFlowModal
+                                }
+                                showLocationStep('location');
+                            }
+                        });
+                    } else {
+                        window.isFetchingSingleOutlet = false;
+                        // No cities available or error - show modal as fallback
+                        if (!locationFetchModal) {
+                            // locationFetchModal handled by unified #locationFlowModal
+                        }
+                        showLocationStep('location');
+                    }
+                },
+                error: function(xhr, status, error) {
+                    window.isFetchingSingleOutlet = false;
+                    // On error, show modal as fallback
+                    if (!locationFetchModal) {
+                        // locationFetchModal handled by unified #locationFlowModal
+                    }
+                    showLocationStep('location');
+                }
+            });
+        }
+    }
+}
+/*navigation dropdown navbar*/
+
+// Function to handle "YES, I WILL PICK UP" button click
+function selectPickUp(isSlotBased = 0) {
+    // Set order type to pickup
+    order_selected_tab = 2;
+    localStorage.setItem('orderType', 2);
+    
+    // Update text placeholders for pickup
+    $('#textlocationmodal').html('Enter the pickup location');
+    
+    // Immediately switch tabs before closing modal
+    switchToPickupTab();
+    
+    // Close the pickup modal
+    $('#pickupmodal').modal('hide');
+    
+    // Ensure tab switching after modal is closed
+    $('#pickupmodal').on('hidden.bs.modal', function () {
+        switchToPickupTab();
+        // Remove the event handler to prevent multiple bindings
+        $(this).off('hidden.bs.modal');
+    });
+    
+    // Also do it after a short delay as backup
+    setTimeout(function() {
+        switchToPickupTab();
+        // Only refresh if modal is visible and cities not loaded
+        if ($('#locationFlowModal').hasClass('show')) {
+            var citySelector = $('#citySelector_location');
+            if (citySelector.length && citySelector.find('option').length <= 1) {
+                refreshCityListForPickup();
+            }
+        }
+    }, 200);
+}
+
+// Helper function to switch to pickup tab
+function switchToPickupTab() {
+    //console.log('[CityLoader] switchToPickupTab called');
+    
+    // Force remove active state from delivery tab
+    $('#delivery-tab').removeClass('active').attr('aria-selected', 'false');
+    $('#delivery').removeClass('show active');
+
+    $('#delivery-tab-theo').removeClass('active').attr('aria-selected', 'false');
+    $('#delivery-theo').removeClass('show active');
+    
+    // Force add active state to pickup tab  
+    $('#pickup-tab').addClass('active').attr('aria-selected', 'true');
+    $('#pickup').addClass('show active');
+
+    $('#pickup-tab-theo').addClass('active').attr('aria-selected', 'true');
+    $('#pickup-theo').addClass('show active');
+    
+    // Use Bootstrap's tab method to ensure proper activation
+    $('#pickup-tab').tab('show');
+
+    $('#pickup-tab-theo').tab('show');
+    
+    // Only clear cities if they're not already loaded (don't clear if preload just populated)
+    var citySelector = $('#citySelector_location');
+    var hasCities = citySelector.find('option').length > 1;
+    if (!hasCities && !preloadCompletedForModal) {
+        //console.log('[CityLoader] Clearing cities in switchToPickupTab (cities not loaded)');
+        citySelector.html('<option value="" selected>Loading...</option>');
+    } else {
+        //console.log('[CityLoader] NOT clearing cities in switchToPickupTab - already loaded or preload completed');
+    }
+}
+
+// Function to handle "GET DELIVERY INSTEAD" button click  
+function changeDelivery() {
+    
+    // Set order type to delivery immediately
+    order_selected_tab = 1;
+    localStorage.setItem('orderType', 1);
+   
+    
+    // Update text placeholders for delivery
+    $('#textlocationmodal').html('Enter the delivery location');
+    
+    // Force immediate tab switching with multiple methods
+    
+    forceDeliveryTabActive();
+    
+    // Close the pickup modal
+    $('#pickupmodal').modal('hide');
+    
+    // Force tab switching again after a very short delay
+    setTimeout(function() {
+      
+        forceDeliveryTabActive();
+    }, 50);
+    
+    // Ensure tab switching after modal is closed
+    $('#pickupmodal').on('hidden.bs.modal', function () {
+        
+        forceDeliveryTabActive();
+        // Remove the event handler to prevent multiple bindings
+        $(this).off('hidden.bs.modal');
+    });
+    
+    // Final fallback with city list refresh
+    setTimeout(function() {
+        forceDeliveryTabActive();
+        // Only refresh if modal is visible and cities not loaded
+        if ($('#locationFlowModal').hasClass('show')) {
+            var citySelector = $('#citySelector_location');
+            if (citySelector.length && citySelector.find('option').length <= 1) {
+                refreshCityListForDelivery();
+            }
+        }
+    }, 300);
+    
+    
+}
+
+// Enhanced function to force delivery tab active with multiple approaches
+function forceDeliveryTabActive() {
+ 
+    
+    // Method 1: Direct DOM manipulation
+    $('#pickup-tab').removeClass('active').removeClass('show').attr('aria-selected', 'false');
+    $('#pickup').removeClass('show').removeClass('active');
+    $('#delivery-tab').addClass('active').attr('aria-selected', 'true');
+    $('#delivery').addClass('show').addClass('active');
+    
+    // Method 2: Bootstrap tab method
+    try {
+        $('#delivery-tab').tab('show');
+       
+    } catch (e) {
+        ////console.log('Bootstrap tab show failed:', e);
+    }
+    
+    // Method 3: Force click event
+    try {
+        $('#delivery-tab')[0].click();
+       
+    } catch (e) {
+        ////console.log('Programmatic click failed:', e);
+    }
+    
+    // Method 4: Trigger change event
+    try {
+        changeOrderType_tab(1);
+    } catch (e) {
+        ////console.log('changeOrderType_tab failed:', e);
+    }
+    
+    // Only clear cities if they're not already loaded (don't clear if preload just populated)
+    var citySelector = $('#citySelector_location');
+    var hasCities = citySelector.find('option').length > 1;
+    if (!hasCities && !preloadCompletedForModal) {
+        //console.log('[CityLoader] Clearing cities in forceDeliveryTabActive (cities not loaded)');
+        citySelector.html('<option value="" selected>Loading...</option>');
+    } else {
+        //console.log('[CityLoader] NOT clearing cities in forceDeliveryTabActive - already loaded or preload completed');
+    }
+}
+
+// Helper function to switch to delivery tab
+function switchToDeliveryTab() {
+    //console.log('[CityLoader] switchToDeliveryTab called');
+    
+    // Force remove active state from pickup tab
+    $('#pickup-tab').removeClass('active').attr('aria-selected', 'false');
+    $('#pickup').removeClass('show active');
+    $('#pickup-tab-theo').removeClass('active').attr('aria-selected', 'false');
+    $('#pickup-theo').removeClass('show active');
+    
+    // Force add active state to delivery tab  
+    $('#delivery-tab').addClass('active').attr('aria-selected', 'true');
+    $('#delivery').addClass('show active');
+    $('#delivery-tab-theo').addClass('active').attr('aria-selected', 'true');
+    $('#delivery-theo').addClass('show active');
+    
+    // Use Bootstrap's tab method to ensure proper activation
+    $('#delivery-tab').tab('show');
+    $('#delivery-tab-theo').tab('show');
+    
+    // Only clear cities if they're not already loaded (don't clear if preload just populated)
+    var citySelector = $('#citySelector_location');
+    var hasCities = citySelector.find('option').length > 1;
+    if (!hasCities && !preloadCompletedForModal) {
+        //console.log('[CityLoader] Clearing cities in switchToDeliveryTab (cities not loaded)');
+        citySelector.html('<option value="" selected>Loading...</option>');
+    } else {
+        //console.log('[CityLoader] NOT clearing cities in switchToDeliveryTab - already loaded or preload completed');
+    }
+}
+
+// Function to ensure correct tab state on page load
+function initializeTabState() {
+    var savedOrderType = localStorage.getItem('orderType');
+    
+    
+    if (savedOrderType == '2') {
+        // Pickup was selected previously
+        switchToPickupTab();
+        order_selected_tab = 2;
+    } else {
+        // Default to delivery
+        switchToDeliveryTab();
+        order_selected_tab = 1;
+    }
+} 
+
+// Initialize tab state when document is ready
+$(document).ready(function() {
+    // Small delay to ensure all elements are loaded
+    setTimeout(function() {
+        initializeTabState();
+    }, 100);
+});
+
+// 1. Set delivery as default order type
+// localStorage.setItem('orderType', 1);
+var orderType_Val = localStorage.getItem('orderType');
+if(orderType_Val){
+     localStorage.setItem('orderType', orderType_Val);
+}else{
+    localStorage.setItem('orderType', 1);
+}
+
+// 2. Force delivery tab to be active
+$('#delivery-tab').addClass('active').attr('aria-selected', 'true');
+$('#pickup-tab').removeClass('active');
+
+// 3. City list initialization is handled in document.ready above
+// No need to call here - prevents duplicate API calls
+
+// Location Reset Functionality - Reset location selection every 3 minutes (TESTING)
+function checkLocationReset() {
+    // Single-outlet sites have no location flow — never reset or re-prompt.
+    if (window.isSingleOutlet) return;
+    const LOCATION_RESET_KEY = 'locationResetTime';
+    const LOCATION_RESET_INTERVAL = 60 * 60 * 1000; // 3 minutes in milliseconds (TESTING)
+    
+    try {
+        const now = Date.now();
+        const lastResetTime = localStorage.getItem(LOCATION_RESET_KEY);
+        
+        if (!lastResetTime) {
+            // First time - set the reset time
+            localStorage.setItem(LOCATION_RESET_KEY, now.toString());
+            ////console.log('Location reset timer initialized');
+            return;
+        }
+        
+        const timeSinceLastReset = now - parseInt(lastResetTime);
+        
+        if (timeSinceLastReset >= LOCATION_RESET_INTERVAL) {
+            // 3 minutes have passed - reset location data
+            resetLocationData();
+            localStorage.setItem(LOCATION_RESET_KEY, now.toString());
+            ////console.log('Location data reset after 3 minutes');
+            
+            // Show location modal again
+            showLocationModalAfterReset();
+        } else {
+            // Calculate time remaining until next reset
+            const timeRemaining = LOCATION_RESET_INTERVAL - timeSinceLastReset;
+            const hoursRemaining = Math.ceil(timeRemaining / (60 * 60 * 1000));
+            ////console.log('Location reset in approximately', hoursRemaining, 'hour(s)');
+        }
+    } catch (e) {
+        //console.warn('Location reset check failed:', e);
+    }
+}
+
+function resetLocationData() {
+    try {
+        // Clear location-related data from localStorage
+        localStorage.removeItem('business');
+        localStorage.removeItem('city');
+        localStorage.removeItem('locality');
+        localStorage.removeItem('slug');
+        localStorage.removeItem('searchLocalityInput');
+        
+        // Clear location-related data from sessionStorage
+        sessionStorage.removeItem('business');
+        sessionStorage.removeItem('city');
+        sessionStorage.removeItem('locality');
+        sessionStorage.removeItem('slug');
+        sessionStorage.removeItem('searchLocalityInput');
+
+        // Hide header location info bar immediately — data is cleared so it's stale
+        $('#locationInfoBar').hide();
+        $('.mobileselectcity').hide();
+
+        ////console.log('Location data cleared successfully');
+    } catch (e) {
+        console.warn('Failed to clear location data:', e);
+    }
+}
+
+function showLocationModalAfterReset() {
+    try {
+        // Only prompt on home page — showing on order/checkout/store-locator pages is disruptive
+        if (window.location.pathname !== '/') return;
+        if (!isLocationDataComplete()) {
+            showLocationStep('location');
+        }
+    } catch (e) {
+        //console.warn('Failed to show location modal after reset:', e);
+    }
+}
+
+// Set up periodic check for location reset (every 5 minutes)
+setInterval(function() {
+    checkLocationReset();
+}, 5 * 60 * 1000); // Check every 5 minutes
+
+// Initialize location modal tab functionality
+$(document).ready(function() {
+    initializeLocationModalTabs();
+});
+
+// Location Modal Tab Functionality
+function initializeLocationModalTabs() {
+    // Tab switching functionality
+    $('#deliveryTab').on('click', function() {
+        // Switch to delivery mode
+        localStorage.setItem('orderType', '1');
+        $(this).css({
+            'color': '#28a745',
+            'border-bottom': '2px solid #28a745'
+        });
+        $('#pickupTab').css({
+            'color': '#666',
+            'border-bottom': 'none'
+        });
+        
+        // Update button text and functionality
+        updateLocationModalContent('delivery');
+    });
+    
+    $('#pickupTab').on('click', function() {
+        // Switch to pickup mode
+        localStorage.setItem('orderType', '2');
+        $(this).css({
+            'color': '#28a745',
+            'border-bottom': '2px solid #28a745'
+        });
+        $('#deliveryTab').css({
+            'color': '#666',
+            'border-bottom': 'none'
+        });
+        
+        // Update button text and functionality
+        updateLocationModalContent('pickup');
+    });
+}
+
+function updateLocationModalContent(mode) {
+    const enterAddressButton = $('#enterAddressButton');
+    if (enterAddressButton.length) {
+        if (mode === 'delivery') {
+            enterAddressButton.text('Enter the delivery location');
+        } else {
+            enterAddressButton.text('Enter the pickup location');
+        }
+    }
+}
+
+// $('#search_locality_new').on('focus', function() {
+//     $('body').css('position', 'static');
+// });
+
+// $('#search_locality_new').on('blur', function() {
+//     $('body').css('position', 'fixed');
+// });
+
+function openOrderPage(storeSlug, selectedSection = '', selectedItem = '', locality = '', city = '', businessId = '', includeSectionSlug = true) {
+    if (storeSlug != '') {
+        if (typeof webengage_tag == "function") {
+            webengage.track("Location Selected", {
+                "City": city,
+                "Locality": locality
+            });
+        }
+
+        if (typeof trackEvent === 'function') {
+            trackEvent("location_selected");
+        }
+
+        if (city != '') {
+            localStorage.setItem('city', city);
+        }
+        if (locality != '') {
+            localStorage.setItem('locality', locality);
+        }
+        if (businessId != '') {
+            localStorage.setItem('business', businessId);
+        }
+
+        if (typeof startLocationTimer === 'function') {
+            startLocationTimer();
+        }
+
+        var urlParamsForRedirection = [];
+
+        if (includeSectionSlug) {
+            if (selectedSection != null && selectedSection != '') {
+                urlParamsForRedirection.push(`section_slug=${selectedSection}`);
+            }
+            if (selectedItem != null && selectedItem != '') {
+                urlParamsForRedirection.push(`item_slug=${selectedItem}`);
+            }
+        }
+
+        if (urlParamsForRedirection.length > 0) {
+            window.location.href = origin + "/order/" + storeSlug + `?${urlParamsForRedirection.join('&')}`;
+        } else {
+            window.location.href = origin + "/order/" + storeSlug;
+        }
+    }
+}
